@@ -37,6 +37,8 @@
     generatedConfigFile = pkgs.writeText "hermes-config.yaml" configJson;
     configFile = if cfg.configFile != null then cfg.configFile else generatedConfigFile;
 
+    configMergeScript = pkgs.callPackage ./configMergeScript.nix { };
+
     # Generate .env from non-secret environment attrset
     envFileContent = lib.concatStringsSep "\n" (
       lib.mapAttrsToList (k: v: "${k}=${v}") cfg.environment
@@ -55,6 +57,8 @@
     );
 
     containerName = "hermes-agent";
+    containerDataDir = "/data";     # stateDir mount point inside container
+    containerHomeDir = "/home/hermes";
 
     # ── Container mode helpers ──────────────────────────────────────────
     containerBin = if cfg.container.backend == "docker"
@@ -86,10 +90,10 @@
       fi
 
       # ── User: ensure a user with UID=$HERMES_UID exists ──
-      EXISTING_USER=$(getent passwd "$HERMES_UID" 2>/dev/null | cut -d: -f1 || true)
-      if [ -n "$EXISTING_USER" ]; then
-        TARGET_USER="$EXISTING_USER"
-        TARGET_HOME=$(getent passwd "$HERMES_UID" | cut -d: -f6)
+      PASSWD_ENTRY=$(getent passwd "$HERMES_UID" 2>/dev/null || true)
+      if [ -n "$PASSWD_ENTRY" ]; then
+        TARGET_USER=$(echo "$PASSWD_ENTRY" | cut -d: -f1)
+        TARGET_HOME=$(echo "$PASSWD_ENTRY" | cut -d: -f6)
       else
         TARGET_USER="hermes"
         TARGET_HOME="/home/hermes"
@@ -99,9 +103,12 @@
           adduser -u "$HERMES_UID" -D -h "$TARGET_HOME" -s /bin/sh -G "$GROUP_NAME" "$TARGET_USER" 2>/dev/null || true
         fi
       fi
-      if [ ! -d "$TARGET_HOME" ]; then
-        mkdir -p "$TARGET_HOME"
-        chown "$HERMES_UID:$HERMES_GID" "$TARGET_HOME"
+      mkdir -p "$TARGET_HOME"
+      chown "$HERMES_UID:$HERMES_GID" "$TARGET_HOME"
+
+      # Ensure HERMES_HOME is owned by the target user
+      if [ -n "''${HERMES_HOME:-}" ] && [ -d "$HERMES_HOME" ]; then
+        chown -R "$HERMES_UID:$HERMES_GID" "$HERMES_HOME"
       fi
 
       # Install sudo on Debian/Ubuntu if missing (first boot only, cached in writable layer)
@@ -117,7 +124,7 @@
       if command -v setpriv >/dev/null 2>&1; then
         exec setpriv --reuid="$HERMES_UID" --regid="$HERMES_GID" --init-groups "$@"
       elif command -v su >/dev/null 2>&1; then
-        exec su -s /bin/sh "$TARGET_USER" -c 'exec "$@"' -- "$@"
+        exec su -s /bin/sh "$TARGET_USER" -c 'exec "$0" "$@"' -- "$@"
       else
         echo "WARNING: no privilege-drop tool (setpriv/su), running as root" >&2
         exec "$@"
@@ -128,6 +135,7 @@
     # Environment variables are handled via $HERMES_HOME/.env (read by
     # load_hermes_dotenv at Python startup), so they don't need container recreation.
     containerIdentity = builtins.hashString "sha256" (builtins.toJSON {
+      schema = 2; # bump when hardcoded volumes/env vars change
       image = cfg.container.image;
       extraVolumes = cfg.container.extraVolumes;
       extraOptions = cfg.container.extraOptions;
@@ -135,6 +143,13 @@
     });
 
     identityFile = "${cfg.stateDir}/.container-identity";
+
+    # Default: /var/lib/hermes/workspace → /data/workspace.
+    # Custom paths outside stateDir pass through unchanged (user must add extraVolumes).
+    containerWorkDir =
+      if lib.hasPrefix "${cfg.stateDir}/" cfg.workingDirectory
+      then "${containerDataDir}/${lib.removePrefix "${cfg.stateDir}/" cfg.workingDirectory}"
+      else cfg.workingDirectory;
 
   in {
     options.services.hermes-agent = with lib; {
@@ -291,6 +306,23 @@
               description = "HTTP headers, e.g. for authentication (HTTP transport).";
             };
 
+            # Authentication
+            auth = mkOption {
+              type = types.nullOr (types.enum [ "oauth" ]);
+              default = null;
+              description = ''
+                Authentication method. Set to "oauth" for OAuth 2.1 PKCE flow
+                (remote MCP servers). Tokens are stored in $HERMES_HOME/mcp-tokens/.
+              '';
+            };
+
+            # Enable/disable
+            enabled = mkOption {
+              type = types.bool;
+              default = true;
+              description = "Enable or disable this MCP server.";
+            };
+
             # Common options
             timeout = mkOption {
               type = types.nullOr types.int;
@@ -303,15 +335,42 @@
               description = "Initial connection timeout in seconds (default: 60).";
             };
 
+            # Tool filtering
+            tools = mkOption {
+              type = types.nullOr (types.submodule {
+                options = {
+                  include = mkOption {
+                    type = types.listOf types.str;
+                    default = [ ];
+                    description = "Tool allowlist — only these tools are registered.";
+                  };
+                  exclude = mkOption {
+                    type = types.listOf types.str;
+                    default = [ ];
+                    description = "Tool blocklist — these tools are hidden.";
+                  };
+                };
+              });
+              default = null;
+              description = "Filter which tools are exposed by this server.";
+            };
+
             # Sampling (server-initiated LLM requests)
             sampling = mkOption {
               type = types.nullOr (types.submodule {
                 options = {
                   enabled = mkOption { type = types.bool; default = true; description = "Enable sampling."; };
-                  model = mkOption { type = types.str; default = ""; description = "Override model for sampling requests."; };
+                  model = mkOption { type = types.nullOr types.str; default = null; description = "Override model for sampling requests."; };
                   max_tokens_cap = mkOption { type = types.nullOr types.int; default = null; description = "Max tokens per request."; };
                   timeout = mkOption { type = types.nullOr types.int; default = null; description = "LLM call timeout in seconds."; };
                   max_rpm = mkOption { type = types.nullOr types.int; default = null; description = "Max requests per minute."; };
+                  max_tool_rounds = mkOption { type = types.nullOr types.int; default = null; description = "Max tool-use rounds per sampling request."; };
+                  allowed_models = mkOption { type = types.listOf types.str; default = [ ]; description = "Models the server is allowed to request."; };
+                  log_level = mkOption {
+                    type = types.nullOr (types.enum [ "debug" "info" "warning" ]);
+                    default = null;
+                    description = "Audit log level for sampling requests.";
+                  };
                 };
               });
               default = null;
@@ -333,6 +392,10 @@
             remote-api = {
               url = "http://my-server:8080/v0/mcp";
               headers = { Authorization = "Bearer ..."; };
+            };
+            remote-oauth = {
+              url = "https://mcp.example.com/mcp";
+              auth = "oauth";
             };
           }
         '';
@@ -405,9 +468,32 @@
       # ── Merge MCP servers into settings ────────────────────────────────
       (lib.mkIf (cfg.mcpServers != { }) {
         services.hermes-agent.settings.mcp_servers = lib.mapAttrs (_name: srv:
-          { inherit (srv) command args; }
+          # Stdio transport
+          lib.optionalAttrs (srv.command != null) { inherit (srv) command args; }
           // lib.optionalAttrs (srv.env != { }) { inherit (srv) env; }
+          # HTTP transport
+          // lib.optionalAttrs (srv.url != null) { inherit (srv) url; }
+          // lib.optionalAttrs (srv.headers != { }) { inherit (srv) headers; }
+          # Auth
+          // lib.optionalAttrs (srv.auth != null) { inherit (srv) auth; }
+          # Enable/disable
+          // { inherit (srv) enabled; }
+          # Common options
           // lib.optionalAttrs (srv.timeout != null) { inherit (srv) timeout; }
+          // lib.optionalAttrs (srv.connect_timeout != null) { inherit (srv) connect_timeout; }
+          # Tool filtering
+          // lib.optionalAttrs (srv.tools != null) {
+            tools = lib.filterAttrs (_: v: v != [ ]) {
+              inherit (srv.tools) include exclude;
+            };
+          }
+          # Sampling
+          // lib.optionalAttrs (srv.sampling != null) {
+            sampling = lib.filterAttrs (_: v: v != null && v != [ ]) {
+              inherit (srv.sampling) enabled model max_tokens_cap timeout max_rpm
+                max_tool_rounds allowed_models log_level;
+            };
+          }
         ) cfg.mcpServers;
       })
 
@@ -434,6 +520,7 @@
         systemd.tmpfiles.rules = [
           "d ${cfg.stateDir}                0755 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/.hermes        0755 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.workingDirectory}         0750 ${cfg.user} ${cfg.group} - -"
         ];
       }
@@ -443,11 +530,20 @@
         system.activationScripts."hermes-agent-setup" = lib.stringAfter [ "users" ] ''
           # Ensure directories exist (activation runs before tmpfiles)
           mkdir -p ${cfg.stateDir}/.hermes
+          mkdir -p ${cfg.stateDir}/home
           mkdir -p ${cfg.workingDirectory}
-          chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.workingDirectory}
+          chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
 
-          # Link config file
-          install -o ${cfg.user} -g ${cfg.group} -m 0644 -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
+          # Merge Nix settings into existing config.yaml.
+          # Preserves user-added keys (skills, streaming, etc.); Nix keys win.
+          # If configFile is user-provided (not generated), overwrite instead of merge.
+          ${if cfg.configFile != null then ''
+            install -o ${cfg.user} -g ${cfg.group} -m 0644 -D ${configFile} ${cfg.stateDir}/.hermes/config.yaml
+          '' else ''
+            ${configMergeScript} ${generatedConfigFile} ${cfg.stateDir}/.hermes/config.yaml
+            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/config.yaml
+            chmod 0644 ${cfg.stateDir}/.hermes/config.yaml
+          ''}
 
           # Managed mode marker (so interactive shells also detect NixOS management)
           touch ${cfg.stateDir}/.hermes/.managed
@@ -582,16 +678,18 @@ HERMES_NIX_ENV_EOF
                 --network=host \
                 --entrypoint ${containerEntrypoint} \
                 --volume /nix/store:/nix/store:ro \
-                --volume ${cfg.stateDir}:/data \
+                --volume ${cfg.stateDir}:${containerDataDir} \
+                --volume ${cfg.stateDir}/home:${containerHomeDir} \
                 ${lib.concatStringsSep " " (map (v: "--volume ${v}") cfg.container.extraVolumes)} \
                 --env HERMES_UID="$HERMES_UID" \
                 --env HERMES_GID="$HERMES_GID" \
-                --env HERMES_HOME=/data/.hermes \
+                --env HERMES_HOME=${containerDataDir}/.hermes \
                 --env HERMES_MANAGED=true \
-                --env HOME=/home/hermes \
+                --env HOME=${containerHomeDir} \
+                --env MESSAGING_CWD=${containerWorkDir} \
                 ${lib.concatStringsSep " " cfg.container.extraOptions} \
                 ${cfg.container.image} \
-                /data/current-package/bin/hermes gateway run --replace ${lib.concatStringsSep " " cfg.extraArgs}
+                ${containerDataDir}/current-package/bin/hermes gateway run --replace ${lib.concatStringsSep " " cfg.extraArgs}
 
               echo "${containerIdentity}" > ${identityFile}
             fi

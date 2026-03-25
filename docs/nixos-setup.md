@@ -171,6 +171,10 @@ directory setup, config generation, secrets, documents, and service lifecycle.
       command = "npx";
       args = [ "-y" "@modelcontextprotocol/server-filesystem" "/data/workspace" ];
     };
+    mcpServers.remote-tools = {
+      url = "https://mcp.example.com/mcp";
+      auth = "oauth";
+    };
 
     # ── Container options ──────────────────────────────────────────────
     container = {
@@ -281,14 +285,16 @@ Host                                    Container
   │   ├── config.yaml                      (Nix-generated, copied by activation)
   │   ├── .managed                         (marker file)
   │   ├── state.db
+  │   ├── mcp-tokens/                     (OAuth tokens for MCP servers)
   │   ├── sessions/
   │   ├── memories/
   │   └── ...
+  ├── home/                               ──►  /home/hermes    (rw)
   └── workspace/                           (MESSAGING_CWD)
       ├── SOUL.md                          (from documents option)
       └── (agent-created files)
 
-Container writable layer (apt/pip/npm):   /usr, /home/hermes, /tmp
+Container writable layer (apt/pip/npm):   /usr, /tmp
 ```
 
 The container entrypoint is `/data/current-package/bin/hermes gateway run --replace`,
@@ -296,18 +302,18 @@ which resolves through the symlink to the current Nix store path.
 
 ### What Persists Across What
 
-| Event | Container recreated? | `/data` (state) | Writable layer (`apt`/`pip`/`npm`) |
-|---|---|---|---|
-| `systemctl restart hermes-agent` | No | Persists | Persists |
-| `nixos-rebuild switch` (code change) | No (symlink updated) | Persists | Persists |
-| Host reboot | No | Persists | Persists |
-| `nix-collect-garbage` | No (GC root) | Persists | Persists |
-| Image change (`container.image`) | **Yes** | Persists | **Lost** |
-| Volume/options change | **Yes** | Persists | **Lost** |
-| `environment`/`environmentFiles` change | No | Persists | Persists |
+| Event | Container recreated? | `/data` (state) | `/home/hermes` | Writable layer (`apt`/`pip`/`npm`) |
+|---|---|---|---|---|
+| `systemctl restart hermes-agent` | No | Persists | Persists | Persists |
+| `nixos-rebuild switch` (code change) | No (symlink updated) | Persists | Persists | Persists |
+| Host reboot | No | Persists | Persists | Persists |
+| `nix-collect-garbage` | No (GC root) | Persists | Persists | Persists |
+| Image change (`container.image`) | **Yes** | Persists | Persists | **Lost** |
+| Volume/options change | **Yes** | Persists | Persists | **Lost** |
+| `environment`/`environmentFiles` change | No | Persists | Persists | Persists |
 
 The container is only recreated when its **identity hash** changes. The hash
-covers: `image`, `extraVolumes`, `extraOptions`. Changes to `environment`,
+covers: `schema` version, `image`, `extraVolumes`, `extraOptions`. Changes to `environment`,
 `environmentFiles`, `settings`, `documents`, or the hermes package itself do
 **not** trigger recreation — environment variables are written to
 `$HERMES_HOME/.env` by the activation script and read by hermes at startup.
@@ -347,6 +353,172 @@ Detection uses two signals:
 
 If you need to change configuration, edit your `configuration.nix` and run
 `sudo nixos-rebuild switch`.
+
+---
+
+## MCP Servers
+
+The `mcpServers` option lets you declaratively configure
+[MCP (Model Context Protocol)](https://modelcontextprotocol.io) servers.
+Each server uses either **stdio** (local command) or **HTTP** (remote URL)
+transport.
+
+### Stdio Transport (Local Servers)
+
+For MCP servers that run as local subprocesses:
+
+```nix
+{
+  services.hermes-agent.mcpServers = {
+    filesystem = {
+      command = "npx";
+      args = [ "-y" "@modelcontextprotocol/server-filesystem" "/data/workspace" ];
+    };
+
+    github = {
+      command = "npx";
+      args = [ "-y" "@modelcontextprotocol/server-github" ];
+      env.GITHUB_PERSONAL_ACCESS_TOKEN = "\${GITHUB_TOKEN}"; # resolved from .env
+    };
+  };
+}
+```
+
+Environment variables in `env` values are resolved from `$HERMES_HOME/.env`
+at runtime. Use `environmentFiles` (with sops-nix or agenix) to inject
+secrets — never put tokens directly in Nix config.
+
+### HTTP Transport (Remote Servers)
+
+For remote MCP servers accessible via HTTP/StreamableHTTP:
+
+```nix
+{
+  services.hermes-agent.mcpServers = {
+    remote-api = {
+      url = "https://mcp.example.com/v1/mcp";
+      headers.Authorization = "Bearer \${MCP_REMOTE_API_KEY}";
+      timeout = 180;
+    };
+  };
+}
+```
+
+### HTTP Transport with OAuth
+
+For remote MCP servers that use OAuth 2.1 for authentication, set
+`auth = "oauth"`. Hermes implements the full OAuth 2.1 PKCE flow via the
+MCP SDK — including metadata discovery, dynamic client registration, token
+exchange, and automatic refresh.
+
+```nix
+{
+  services.hermes-agent.mcpServers = {
+    my-oauth-server = {
+      url = "https://mcp.example.com/mcp";
+      auth = "oauth";
+    };
+  };
+}
+```
+
+Tokens are stored in `$HERMES_HOME/mcp-tokens/<server-name>.json` and
+persist across restarts and rebuilds. Token refresh is automatic.
+
+#### Initial Authorization (Headless / Container)
+
+The first OAuth authorization requires completing a browser-based consent
+flow. In a headless NixOS deployment (native or container), Hermes detects
+the absence of a display and prints the authorization URL to stdout/logs
+instead of opening a browser.
+
+**Option A: Interactive bootstrap** — run the OAuth flow once via `docker exec`
+(container mode) or `sudo -u hermes` (native mode):
+
+```bash
+# Container mode
+docker exec -it hermes-agent \
+  hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
+
+# Native mode
+sudo -u hermes HERMES_HOME=/var/lib/hermes/.hermes \
+  hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
+```
+
+Since the container uses `--network=host`, the OAuth callback listener on
+`127.0.0.1` is reachable from the host. Open the printed URL in your
+browser, complete consent, and the callback is received by Hermes inside
+the container. Tokens are saved and reused automatically from then on.
+
+**Option B: Pre-seed tokens** — complete the OAuth flow on a workstation
+first, then copy the token files to the server:
+
+```bash
+# On your workstation
+hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
+
+# Copy tokens to the server
+scp ~/.hermes/mcp-tokens/my-oauth-server.json \
+    server:/var/lib/hermes/.hermes/mcp-tokens/
+scp ~/.hermes/mcp-tokens/my-oauth-server.client.json \
+    server:/var/lib/hermes/.hermes/mcp-tokens/
+```
+
+Ensure the files are owned by the hermes user (`chown hermes:hermes`)
+and have mode `0600`.
+
+### Sampling (Server-Initiated LLM Requests)
+
+Some MCP servers can request LLM completions from the agent. Configure
+this per-server with the `sampling` option:
+
+```nix
+{
+  services.hermes-agent.mcpServers.analysis = {
+    command = "npx";
+    args = [ "-y" "analysis-server" ];
+    sampling = {
+      enabled = true;
+      model = "google/gemini-3-flash";
+      max_tokens_cap = 4096;
+      timeout = 30;
+      max_rpm = 10;
+    };
+  };
+}
+```
+
+### Mixed Example
+
+```nix
+{
+  services.hermes-agent = {
+    environmentFiles = [ config.sops.secrets."hermes/env".path ];
+
+    mcpServers = {
+      # Local stdio server
+      filesystem = {
+        command = "npx";
+        args = [ "-y" "@modelcontextprotocol/server-filesystem" "/data/workspace" ];
+      };
+
+      # Remote server with API key auth
+      ink = {
+        url = "https://mcp.ml.ink/mcp";
+        headers.Authorization = "Bearer \${INK_API_KEY}";
+      };
+
+      # Remote server with OAuth
+      cloud-tools = {
+        url = "https://tools.example.com/mcp";
+        auth = "oauth";
+        timeout = 300;
+        connect_timeout = 30;
+      };
+    };
+  };
+}
+```
 
 ---
 
@@ -392,10 +564,15 @@ If you need to change configuration, edit your `configuration.nix` and run
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `mcpServers` | `attrsOf submodule` | `{}` | MCP server definitions, merged into `settings.mcp_servers` |
-| `mcpServers.<name>.command` | `str` | — | Server command |
-| `mcpServers.<name>.args` | `listOf str` | `[]` | Command arguments |
-| `mcpServers.<name>.env` | `attrsOf str` | `{}` | Server environment |
-| `mcpServers.<name>.timeout` | `null` or `int` | `null` | Timeout in seconds |
+| `mcpServers.<name>.command` | `null` or `str` | `null` | Server command (stdio transport) |
+| `mcpServers.<name>.args` | `listOf str` | `[]` | Command arguments (stdio transport) |
+| `mcpServers.<name>.env` | `attrsOf str` | `{}` | Environment variables for the server process (stdio transport) |
+| `mcpServers.<name>.url` | `null` or `str` | `null` | Server endpoint URL (HTTP/StreamableHTTP transport) |
+| `mcpServers.<name>.headers` | `attrsOf str` | `{}` | HTTP headers, e.g. `Authorization` (HTTP transport) |
+| `mcpServers.<name>.auth` | `null` or `"oauth"` | `null` | Authentication method. `"oauth"` enables OAuth 2.1 PKCE |
+| `mcpServers.<name>.timeout` | `null` or `int` | `null` | Tool call timeout in seconds (default: 120) |
+| `mcpServers.<name>.connect_timeout` | `null` or `int` | `null` | Initial connection timeout in seconds (default: 60) |
+| `mcpServers.<name>.sampling` | `null` or `submodule` | `null` | Sampling configuration for server-initiated LLM requests |
 
 ### Service Behavior
 
@@ -431,11 +608,13 @@ If you need to change configuration, edit your `configuration.nix` and run
 │   ├── auth.json                    # OAuth credentials (seeded, then self-managed)
 │   ├── gateway.pid
 │   ├── state.db
+│   ├── mcp-tokens/                  # OAuth tokens for MCP servers
 │   ├── sessions/
 │   ├── memories/
 │   ├── skills/
 │   ├── cron/
 │   └── logs/
+├── home/                            # Agent HOME (container mode: /home/hermes)
 └── workspace/                       # MESSAGING_CWD
     ├── SOUL.md                      # From documents option
     └── (agent-created files)
@@ -449,7 +628,7 @@ Same layout, but mounted into the container as `/data`:
 |---|---|---|---|
 | `/nix/store` | `/nix/store` | `ro` | Hermes binary + all Nix deps |
 | `/data` | `/var/lib/hermes` | `rw` | All state, config, workspace |
-| `/home/hermes` | (container layer) | `rw` | Persists — agent home, `pip install --user` |
+| `/home/hermes` | `${stateDir}/home` | `rw` | Persistent — agent home, `pip install --user`, tool caches |
 | `/usr`, `/usr/local` | (container layer) | `rw` | Persists — `apt`/`pip`/`npm` installs |
 | `/tmp` | (container layer) | `rw` | Persists across restarts (lost on recreation) |
 
