@@ -385,6 +385,21 @@ class TestIsNousFreeTier:
     def test_free_tier_by_charge(self):
         assert is_nous_free_tier({"subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0}}) is True
 
+    def test_free_plan_with_credits_is_not_free_tier(self):
+        """Free subscription + prepaid API credits → not free-tier (can use paid models)."""
+        info = {"subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0, "credits_remaining": 25.50}}
+        assert is_nous_free_tier(info) is False
+
+    def test_free_plan_with_zero_credits_is_free_tier(self):
+        """Free subscription + zero credits → free-tier."""
+        info = {"subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0, "credits_remaining": 0}}
+        assert is_nous_free_tier(info) is True
+
+    def test_free_plan_with_unparseable_credits_falls_back_to_free_tier(self):
+        """Garbage credits_remaining falls back to monthly_charge logic (free)."""
+        info = {"subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0, "credits_remaining": "n/a"}}
+        assert is_nous_free_tier(info) is True
+
     def test_no_charge_field_not_free(self):
         """Missing monthly_charge defaults to not-free (don't block users)."""
         assert is_nous_free_tier({"subscription": {"plan": "Free", "tier": 0}}) is False

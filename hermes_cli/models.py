@@ -456,8 +456,16 @@ def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dic
 def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
     """Return True if the account info indicates a free (unpaid) tier.
 
-    Checks ``subscription.monthly_charge == 0``.  Returns False when
-    the field is missing or unparseable (assumes paid — don't block users).
+    A user counts as free-tier only when BOTH conditions hold:
+      • ``subscription.monthly_charge == 0`` (no paid plan), AND
+      • ``subscription.credits_remaining`` is missing or <= 0
+        (no prepaid API credits to spend).
+
+    Users with prepaid API credits are treated as paid — they have
+    balance to spend on paid models even without a monthly subscription.
+
+    Returns False when the relevant fields are missing or unparseable
+    (assumes paid — don't block users).
     """
     sub = account_info.get("subscription")
     if not isinstance(sub, dict):
@@ -466,9 +474,22 @@ def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
     if charge is None:
         return False
     try:
-        return float(charge) == 0
+        if float(charge) > 0:
+            return False  # paying subscriber
     except (TypeError, ValueError):
         return False
+
+    # monthly_charge == 0 — but check for prepaid API credits.  Users with
+    # a positive credit balance can spend on paid models, so they are not
+    # effectively on the free tier.
+    credits = sub.get("credits_remaining")
+    if credits is not None:
+        try:
+            if float(credits) > 0:
+                return False
+        except (TypeError, ValueError):
+            pass
+    return True
 
 
 def partition_nous_models_by_tier(
