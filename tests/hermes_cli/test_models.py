@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
     filter_nous_free_models, _NOUS_ALLOWED_FREE_MODELS,
-    is_nous_free_tier, partition_nous_models_by_tier,
+    is_nous_free_tier, has_nous_paid_model_access, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
 )
 import hermes_cli.models as _models_mod
@@ -385,19 +385,17 @@ class TestIsNousFreeTier:
     def test_free_tier_by_charge(self):
         assert is_nous_free_tier({"subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0}}) is True
 
-    def test_free_plan_with_credits_is_not_free_tier(self):
-        """Free subscription + prepaid API credits → not free-tier (can use paid models)."""
+    def test_subscription_credits_do_not_change_free_tier(self):
+        """Subscription credits are separate from subscription tier."""
         info = {"subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0, "credits_remaining": 25.50}}
-        assert is_nous_free_tier(info) is False
-
-    def test_free_plan_with_zero_credits_is_free_tier(self):
-        """Free subscription + zero credits → free-tier."""
-        info = {"subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0, "credits_remaining": 0}}
         assert is_nous_free_tier(info) is True
 
-    def test_free_plan_with_unparseable_credits_falls_back_to_free_tier(self):
-        """Garbage credits_remaining falls back to monthly_charge logic (free)."""
-        info = {"subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0, "credits_remaining": "n/a"}}
+    def test_purchased_credits_do_not_change_free_tier(self):
+        """API credits unlock paid models but do not change the subscription tier."""
+        info = {
+            "subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0},
+            "purchased_credits_remaining": 25.50,
+        }
         assert is_nous_free_tier(info) is True
 
     def test_no_charge_field_not_free(self):
@@ -419,6 +417,40 @@ class TestIsNousFreeTier:
     def test_empty_response_not_free(self):
         """Completely empty response defaults to not-free."""
         assert is_nous_free_tier({}) is False
+
+
+class TestHasNousPaidModelAccess:
+    """Tests for has_nous_paid_model_access — paid model availability."""
+
+    def test_paid_subscription_has_access(self):
+        info = {"subscription": {"plan": "Plus", "tier": 2, "monthly_charge": 20}}
+        assert has_nous_paid_model_access(info) is True
+
+    def test_free_plan_with_no_purchased_credits_has_no_access(self):
+        info = {
+            "subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0},
+            "purchased_credits_remaining": 0,
+        }
+        assert has_nous_paid_model_access(info) is False
+
+    def test_free_plan_with_purchased_credits_has_access(self):
+        info = {
+            "subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0, "credits_remaining": 0},
+            "purchased_credits_remaining": 25.50,
+        }
+        assert has_nous_paid_model_access(info) is True
+
+    def test_subscription_credits_do_not_unlock_paid_models(self):
+        info = {
+            "subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0, "credits_remaining": 25.50},
+            "purchased_credits_remaining": 0,
+        }
+        assert has_nous_paid_model_access(info) is False
+
+    def test_missing_purchased_credits_defaults_to_access(self):
+        """Missing purchased balance should not block paying users."""
+        info = {"subscription": {"plan": "Free", "tier": 0, "monthly_charge": 0}}
+        assert has_nous_paid_model_access(info) is True
 
 
 class TestPartitionNousModelsByTier:

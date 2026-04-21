@@ -903,13 +903,13 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         model = "gemini-3-flash"
     else:
         model = _NOUS_MODEL
-    # Free-tier users can't use paid auxiliary models — use the free
-    # models instead: mimo-v2-omni for vision, mimo-v2-pro for text tasks.
+    # Accounts without paid-model access must use the free auxiliary models:
+    # mimo-v2-omni for vision, mimo-v2-pro for text tasks.
     try:
-        from hermes_cli.models import check_nous_free_tier
-        if check_nous_free_tier():
+        from hermes_cli.models import check_nous_paid_model_access
+        if not check_nous_paid_model_access():
             model = _NOUS_FREE_TIER_VISION_MODEL if vision else _NOUS_FREE_TIER_AUX_MODEL
-            logger.debug("Free-tier Nous account — using %s for auxiliary/%s",
+            logger.debug("Nous account lacks paid-model access — using %s for auxiliary/%s",
                          model, "vision" if vision else "text")
     except Exception:
         pass

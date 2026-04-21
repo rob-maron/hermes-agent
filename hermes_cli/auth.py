@@ -3376,7 +3376,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 
             from hermes_cli.models import (
                 _PROVIDER_MODELS, get_pricing_for_provider, filter_nous_free_models,
-                check_nous_free_tier, partition_nous_models_by_tier,
+                check_nous_paid_model_access, partition_nous_models_by_tier,
             )
             model_ids = _PROVIDER_MODELS.get("nous", [])
 
@@ -3385,8 +3385,8 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             if model_ids:
                 pricing = get_pricing_for_provider("nous")
                 model_ids = filter_nous_free_models(model_ids, pricing)
-                free_tier = check_nous_free_tier()
-                if free_tier:
+                paid_model_access = check_nous_paid_model_access()
+                if not paid_model_access:
                     model_ids, unavailable_models = partition_nous_models_by_tier(
                         model_ids, pricing, free_tier=True,
                     )
@@ -3401,7 +3401,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             elif unavailable_models:
                 _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
                 print("No free models currently available.")
-                print(f"Upgrade at {_url} to access paid models.")
+                print(f"Add API credits or upgrade at {_url} to access paid models.")
             else:
                 print("No curated models available for Nous Portal.")
         except Exception as exc:

@@ -377,7 +377,7 @@ class TestLoginNousSkipKeepsCurrent:
         )
         monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda p: {})
         monkeypatch.setattr(models_mod, "filter_nous_free_models", lambda ids, p: ids)
-        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda: None)
+        monkeypatch.setattr(models_mod, "check_nous_paid_model_access", lambda: True)
         monkeypatch.setattr(
             models_mod, "partition_nous_models_by_tier",
             lambda ids, p, free_tier=False: (ids, []),

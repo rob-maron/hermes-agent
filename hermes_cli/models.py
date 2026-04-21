@@ -434,6 +434,7 @@ def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dic
                 "credits_remaining": 1686.60,
                 ...
             },
+            "purchased_credits_remaining": 42.50,
             ...
         }
 
@@ -456,16 +457,15 @@ def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dic
 def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
     """Return True if the account info indicates a free (unpaid) tier.
 
-    A user counts as free-tier only when BOTH conditions hold:
-      • ``subscription.monthly_charge == 0`` (no paid plan), AND
-      • ``subscription.credits_remaining`` is missing or <= 0
-        (no prepaid API credits to spend).
+    This is intentionally about the SUBSCRIPTION tier only:
+    ``subscription.monthly_charge == 0`` means free-tier.
 
-    Users with prepaid API credits are treated as paid — they have
-    balance to spend on paid models even without a monthly subscription.
+    Purchased/API credits do not change the user's subscription tier. Call
+    ``has_nous_paid_model_access()`` when the question is whether the user
+    can select paid inference models.
 
-    Returns False when the relevant fields are missing or unparseable
-    (assumes paid — don't block users).
+    Returns False when the field is missing or unparseable (assumes paid —
+    don't block users from subscription-only features by mistake).
     """
     sub = account_info.get("subscription")
     if not isinstance(sub, dict):
@@ -474,22 +474,43 @@ def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
     if charge is None:
         return False
     try:
-        if float(charge) > 0:
-            return False  # paying subscriber
+        return float(charge) == 0
     except (TypeError, ValueError):
         return False
 
-    # monthly_charge == 0 — but check for prepaid API credits.  Users with
-    # a positive credit balance can spend on paid models, so they are not
-    # effectively on the free tier.
-    credits = sub.get("credits_remaining")
-    if credits is not None:
-        try:
-            if float(credits) > 0:
-                return False
-        except (TypeError, ValueError):
-            pass
-    return True
+
+def has_nous_paid_model_access(account_info: dict[str, Any]) -> bool:
+    """Return True if the account can spend on paid Nous models.
+
+    Paid-model access is available when either condition holds:
+      • the user has a paid subscription (``subscription.monthly_charge > 0``)
+      • the user has purchased/API credits
+        (``purchased_credits_remaining > 0``)
+
+    Only return False when the Portal explicitly reports a free subscription
+    AND zero/non-positive purchased credits. Missing or malformed fields
+    default to True so we do not block paying users.
+    """
+    sub = account_info.get("subscription")
+    if not isinstance(sub, dict):
+        return True
+    charge = sub.get("monthly_charge")
+    if charge is None:
+        return True
+    try:
+        charge_value = float(charge)
+    except (TypeError, ValueError):
+        return True
+    if charge_value > 0:
+        return True
+
+    purchased = account_info.get("purchased_credits_remaining")
+    if purchased is None:
+        return True
+    try:
+        return float(purchased) > 0
+    except (TypeError, ValueError):
+        return True
 
 
 def partition_nous_models_by_tier(
@@ -522,11 +543,31 @@ def partition_nous_models_by_tier(
 
 
 # ---------------------------------------------------------------------------
-# TTL cache for free-tier detection — avoids repeated API calls within a
-# session while still picking up upgrades quickly.
+# TTL caches for Nous account capability checks — avoids repeated API calls
+# within a session while still picking up upgrades/credit purchases quickly.
 # ---------------------------------------------------------------------------
 _FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
 _free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
+_paid_model_access_cache: tuple[bool, float] | None = None  # (result, timestamp)
+
+
+def _fetch_current_nous_account_info() -> dict[str, Any]:
+    """Fetch account info for the currently authenticated Nous user."""
+    from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
+
+    # Ensure we have a fresh token (triggers refresh if needed)
+    resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
+
+    state = get_provider_auth_state("nous")
+    if not state:
+        return {}
+    access_token = state.get("access_token", "")
+    portal_url = state.get("portal_base_url", "")
+    if not access_token:
+        return {}
+
+    account_info = fetch_nous_account_tier(access_token, portal_url)
+    return account_info if isinstance(account_info, dict) else {}
 
 
 def check_nous_free_tier() -> bool:
@@ -546,28 +587,36 @@ def check_nous_free_tier() -> bool:
             return cached_result
 
     try:
-        from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
-
-        # Ensure we have a fresh token (triggers refresh if needed)
-        resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
-
-        state = get_provider_auth_state("nous")
-        if not state:
-            _free_tier_cache = (False, now)
-            return False
-        access_token = state.get("access_token", "")
-        portal_url = state.get("portal_base_url", "")
-        if not access_token:
-            _free_tier_cache = (False, now)
-            return False
-
-        account_info = fetch_nous_account_tier(access_token, portal_url)
-        result = is_nous_free_tier(account_info)
+        result = is_nous_free_tier(_fetch_current_nous_account_info())
         _free_tier_cache = (result, now)
         return result
     except Exception:
         _free_tier_cache = (False, now)
         return False  # default to paid on error — don't block users
+
+
+def check_nous_paid_model_access() -> bool:
+    """Check if the current Nous Portal user can use paid Nous models.
+
+    Results are cached for ``_FREE_TIER_CACHE_TTL`` seconds.
+
+    Returns True on any error — never block paying users from selecting
+    paid models because of a transient API or parsing failure.
+    """
+    global _paid_model_access_cache
+    now = time.monotonic()
+    if _paid_model_access_cache is not None:
+        cached_result, cached_at = _paid_model_access_cache
+        if now - cached_at < _FREE_TIER_CACHE_TTL:
+            return cached_result
+
+    try:
+        result = has_nous_paid_model_access(_fetch_current_nous_account_info())
+        _paid_model_access_cache = (result, now)
+        return result
+    except Exception:
+        _paid_model_access_cache = (True, now)
+        return True
 
 
 # ---------------------------------------------------------------------------
