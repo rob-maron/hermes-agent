@@ -8,7 +8,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_runtime_credentials
+from hermes_cli.auth import (
+    AuthError,
+    _nous_device_code_login,
+    format_auth_error,
+    get_provider_auth_state,
+    resolve_nous_runtime_credentials,
+)
 
 
 # =============================================================================
@@ -213,6 +219,86 @@ def test_get_nous_auth_status_empty_returns_not_logged_in(tmp_path, monkeypatch)
 
     status = get_nous_auth_status()
     assert status["logged_in"] is False
+
+
+def test_format_auth_error_uses_persisted_portal_for_subscription_required(tmp_path, monkeypatch):
+    """When the user is logged in, the billing link must point at the same
+    portal we authenticated against — not a hardcoded default."""
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home)  # state portal = https://portal.example.com
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    message = format_auth_error(
+        AuthError("subscription required", provider="nous", code="subscription_required")
+    )
+
+    assert "https://portal.example.com/billing" in message
+
+
+def test_format_auth_error_uses_persisted_portal_for_insufficient_credits(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    message = format_auth_error(
+        AuthError("credits exhausted", provider="nous", code="insufficient_credits")
+    )
+
+    assert "https://portal.example.com/billing" in message
+
+
+def test_format_auth_error_falls_back_to_default_portal_when_no_state(tmp_path, monkeypatch):
+    """No persisted Nous auth state → fall back to the production portal."""
+    from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    message = format_auth_error(
+        AuthError("credits exhausted", provider="nous", code="insufficient_credits")
+    )
+
+    assert f"{DEFAULT_NOUS_PORTAL_URL}/billing" in message
+
+
+def test_nous_device_code_login_shows_billing_link_when_credits_exhausted(monkeypatch, capsys):
+    monkeypatch.setattr("hermes_cli.auth._is_remote_session", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.auth._request_device_code",
+        lambda **kwargs: {
+            "verification_uri_complete": "https://portal.example.com/verify",
+            "user_code": "ABC-123",
+            "expires_in": 600,
+            "interval": 1,
+            "device_code": "device-code",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._poll_for_token",
+        lambda **kwargs: {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth.refresh_nous_oauth_from_state",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AuthError("credits exhausted", provider="nous", code="insufficient_credits")
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        _nous_device_code_login(
+            portal_base_url="https://portal.example.com",
+            open_browser=False,
+        )
+
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "Top up credits here: https://portal.example.com/billing" in out
 
 
 def test_refresh_token_persisted_when_mint_returns_insufficient_credits(tmp_path, monkeypatch):
