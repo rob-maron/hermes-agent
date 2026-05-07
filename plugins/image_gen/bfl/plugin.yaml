@@ -1,0 +1,6 @@
+name: bfl
+version: 1.0.0
+description: "Black Forest Labs image generation. Supports FLUX.2 (variable per-megapixel pricing) and FLUX.1 (flat per-request pricing). Direct mode via BFL_API_KEY or managed mode via Nous Subscription."
+author: NousResearch
+kind: backend
+requires_env: []

@@ -647,14 +647,18 @@ class TestImagegenBackendRegistry:
         assert "fal-ai/flux-2/klein/9b" in catalog
         assert "fal-ai/flux-2-pro" in catalog
 
-    def test_image_gen_providers_tagged_with_fal_backend(self):
-        """Both Nous Subscription and FAL.ai providers must carry the
-        imagegen_backend tag so _configure_provider fires the picker."""
+    def test_image_gen_providers_tagged_with_backend_or_plugin(self):
+        """Each image_gen provider row must carry either ``imagegen_backend``
+        (legacy in-tree FAL path) or ``image_gen_plugin_name`` (plugin-
+        backed path -- e.g. BFL) so ``_configure_provider`` knows where
+        to route after API-key entry."""
         from hermes_cli.tools_config import TOOL_CATEGORIES
         providers = TOOL_CATEGORIES["image_gen"]["providers"]
         for p in providers:
-            assert p.get("imagegen_backend") == "fal", (
-                f"{p['name']} missing imagegen_backend tag"
+            has_backend = p.get("imagegen_backend") == "fal"
+            has_plugin = isinstance(p.get("image_gen_plugin_name"), str)
+            assert has_backend or has_plugin, (
+                f"{p['name']} missing imagegen_backend or image_gen_plugin_name tag"
             )
 
 

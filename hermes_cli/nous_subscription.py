@@ -286,6 +286,7 @@ def get_nous_subscription_features(
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
     direct_searxng = bool(get_env_value("SEARXNG_URL"))
     direct_fal = fal_key_is_configured()
+    direct_bfl = bool(get_env_value("BFL_API_KEY"))
     direct_openai_tts = bool(resolve_openai_audio_api_key())
     direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))
     direct_camofox = bool(get_env_value("CAMOFOX_URL"))
@@ -301,6 +302,7 @@ def get_nous_subscription_features(
         direct_tavily = False
     if image_use_gateway:
         direct_fal = False
+        direct_bfl = False
     if tts_use_gateway:
         direct_openai_tts = False
         direct_elevenlabs = False
@@ -309,7 +311,9 @@ def get_nous_subscription_features(
         direct_browserbase = False
 
     managed_web_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("firecrawl")
-    managed_image_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("fal-queue")
+    managed_image_fal_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("fal-queue")
+    managed_image_bfl_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("bfl")
+    managed_image_available = managed_image_fal_available or managed_image_bfl_available
     managed_tts_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("openai-audio")
     managed_browser_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("browser-use")
     managed_modal_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("modal")
@@ -342,9 +346,22 @@ def get_nous_subscription_features(
         managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng
     )
 
-    image_managed = image_tool_enabled and managed_image_available and not direct_fal
-    image_active = bool(image_tool_enabled and (image_managed or direct_fal))
-    image_available = bool(managed_image_available or direct_fal)
+    configured_image_provider = str(image_gen_cfg.get("provider") or "").strip().lower()
+    if configured_image_provider == "bfl":
+        image_managed = bool(
+            image_tool_enabled and managed_image_bfl_available and not direct_bfl
+        )
+        image_active = bool(
+            image_tool_enabled and (image_managed or direct_bfl)
+        )
+    else:
+        image_managed = bool(
+            image_tool_enabled and managed_image_fal_available and not direct_fal
+        )
+        image_active = bool(
+            image_tool_enabled and (image_managed or direct_fal)
+        )
+    image_available = bool(managed_image_available or direct_fal or direct_bfl)
 
     tts_current_provider = tts_provider or "edge"
     tts_managed = (
@@ -437,8 +454,12 @@ def get_nous_subscription_features(
             managed_by_nous=image_managed,
             direct_override=image_active and not image_managed,
             toolset_enabled=image_tool_enabled,
-            current_provider="FAL" if direct_fal else ("Nous Subscription" if image_managed else ""),
-            explicit_configured=direct_fal,
+            current_provider=(
+                ("BFL" if direct_bfl else ("Nous Subscription · BFL" if image_managed else ""))
+                if configured_image_provider == "bfl"
+                else ("FAL" if direct_fal else ("Nous Subscription · FAL" if image_managed else ""))
+            ),
+            explicit_configured=direct_fal or direct_bfl,
         ),
         "tts": NousFeatureState(
             key="tts",
@@ -554,7 +575,7 @@ def apply_nous_managed_defaults(
 
 _GATEWAY_TOOL_LABELS = {
     "web": "Web search & extract (Firecrawl)",
-    "image_gen": "Image generation (FAL)",
+    "image_gen": "Image generation (FAL or BFL)",
     "tts": "Text-to-speech (OpenAI TTS)",
     "browser": "Browser automation (Browser Use)",
 }
@@ -570,7 +591,7 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
             or get_env_value("TAVILY_API_KEY")
             or get_env_value("EXA_API_KEY")
         ),
-        "image_gen": fal_key_is_configured(),
+        "image_gen": bool(fal_key_is_configured() or get_env_value("BFL_API_KEY")),
         "tts": bool(
             resolve_openai_audio_api_key()
             or get_env_value("ELEVENLABS_API_KEY")
@@ -584,7 +605,7 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
 
 _GATEWAY_DIRECT_LABELS = {
     "web": "Firecrawl/Exa/Parallel/Tavily key",
-    "image_gen": "FAL key",
+    "image_gen": "FAL/BFL key",
     "tts": "OpenAI/ElevenLabs key",
     "browser": "Browser Use/Browserbase key",
 }

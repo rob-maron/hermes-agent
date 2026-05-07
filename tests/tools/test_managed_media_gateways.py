@@ -164,6 +164,37 @@ def _install_fake_openai_module(captured, transcription_response=None):
     sys.modules["openai"] = fake_module
 
 
+def test_managed_bfl_gateway_origin_resolved(monkeypatch):
+    """``resolve_managed_tool_gateway('bfl')`` returns the bfl-gateway origin
+    when the user is on a Nous Subscription."""
+    _install_fake_tools_package()
+    monkeypatch.delenv("BFL_API_KEY", raising=False)
+    monkeypatch.delenv("BFL_GATEWAY_URL", raising=False)
+    monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "nousresearch.com")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+
+    from tools.managed_tool_gateway import resolve_managed_tool_gateway
+
+    config = resolve_managed_tool_gateway("bfl")
+    assert config is not None
+    assert config.gateway_origin == "https://bfl-gateway.nousresearch.com"
+    assert config.nous_user_token == "nous-token"
+    assert config.managed_mode is True
+
+
+def test_bfl_gateway_url_env_override(monkeypatch):
+    """Per-vendor env override (``BFL_GATEWAY_URL``) wins over the shared domain."""
+    _install_fake_tools_package()
+    monkeypatch.setenv("BFL_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+
+    from tools.managed_tool_gateway import resolve_managed_tool_gateway
+
+    config = resolve_managed_tool_gateway("bfl")
+    assert config is not None
+    assert config.gateway_origin == "http://127.0.0.1:3009"
+
+
 def test_managed_fal_submit_uses_gateway_origin_and_nous_token(monkeypatch):
     captured = {}
     _install_fake_tools_package()

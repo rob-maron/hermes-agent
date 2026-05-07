@@ -332,7 +332,7 @@ TOOL_CATEGORIES = {
         "icon": "🎨",
         "providers": [
             {
-                "name": "Nous Subscription",
+                "name": "Nous Subscription · FAL",
                 "badge": "subscription",
                 "tag": "Managed FAL image generation billed to your subscription",
                 "env_vars": [],
@@ -340,6 +340,16 @@ TOOL_CATEGORIES = {
                 "managed_nous_feature": "image_gen",
                 "override_env_vars": ["FAL_KEY"],
                 "imagegen_backend": "fal",
+            },
+            {
+                "name": "Nous Subscription · BFL",
+                "badge": "subscription",
+                "tag": "Managed Black Forest Labs (FLUX) billed to your subscription",
+                "env_vars": [],
+                "requires_nous_auth": True,
+                "managed_nous_feature": "image_gen",
+                "override_env_vars": ["BFL_API_KEY"],
+                "image_gen_plugin_name": "bfl",
             },
             {
                 "name": "FAL.ai",
@@ -1426,11 +1436,37 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
 def _is_provider_active(provider: dict, config: dict) -> bool:
     """Check if a provider entry matches the currently active config."""
     plugin_name = provider.get("image_gen_plugin_name")
-    if plugin_name:
-        image_cfg = config.get("image_gen", {})
-        return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
-
     managed_feature = provider.get("managed_nous_feature")
+
+    if plugin_name and managed_feature == "image_gen":
+        # Managed Nous Subscription row backed by a plugin (e.g. BFL).
+        # Active iff provider name matches AND use_gateway is truthy AND
+        # the subscription feature is managed-by-nous.
+        features = get_nous_subscription_features(config)
+        feature = features.features.get(managed_feature)
+        if feature is None:
+            return False
+        image_cfg = config.get("image_gen", {})
+        if not isinstance(image_cfg, dict):
+            return False
+        if image_cfg.get("provider") != plugin_name:
+            return False
+        if not is_truthy_value(image_cfg.get("use_gateway"), default=False):
+            return False
+        return feature.managed_by_nous
+
+    if plugin_name:
+        # Direct plugin row (no managed_feature) -- active iff the
+        # provider is selected AND the user is NOT routed through the
+        # managed gateway (which is the "Nous Subscription · <plugin>"
+        # row's territory).
+        image_cfg = config.get("image_gen", {})
+        if not isinstance(image_cfg, dict):
+            return False
+        if image_cfg.get("provider") != plugin_name:
+            return False
+        return not is_truthy_value(image_cfg.get("use_gateway"), default=False)
+
     if managed_feature:
         features = get_nous_subscription_features(config)
         feature = features.features.get(managed_feature)
@@ -1673,14 +1709,22 @@ def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None
     _print_success(f"  Model set to: {chosen}")
 
 
-def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
-    """Persist a plugin-backed image generation provider selection."""
+def _select_plugin_image_gen_provider(
+    plugin_name: str, config: dict, *, use_gateway: bool = False,
+) -> None:
+    """Persist a plugin-backed image generation provider selection.
+
+    ``use_gateway`` is True when the user picked the managed Nous
+    Subscription row that backs onto this plugin (e.g. "Nous Subscription
+    · BFL"). The plugin reads ``image_gen.use_gateway`` to decide
+    between direct and managed modes per request.
+    """
     img_cfg = config.setdefault("image_gen", {})
     if not isinstance(img_cfg, dict):
         img_cfg = {}
         config["image_gen"] = img_cfg
     img_cfg["provider"] = plugin_name
-    img_cfg["use_gateway"] = False
+    img_cfg["use_gateway"] = bool(use_gateway)
     _print_success(f"  image_gen.provider set to: {plugin_name}")
     _configure_imagegen_model_for_plugin(plugin_name, config)
 
@@ -1742,10 +1786,15 @@ def _configure_provider(provider: dict, config: dict):
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
         # Plugin-registered image_gen provider: write image_gen.provider
-        # and route model selection to the plugin's own catalog.
+        # and route model selection to the plugin's own catalog. When
+        # paired with a managed_nous_feature, persist use_gateway=True so
+        # the plugin routes through the managed gateway.
         plugin_name = provider.get("image_gen_plugin_name")
         if plugin_name:
-            _select_plugin_image_gen_provider(plugin_name, config)
+            _select_plugin_image_gen_provider(
+                plugin_name, config,
+                use_gateway=managed_feature == "image_gen",
+            )
             return
         # Imagegen backends prompt for model selection after backend pick.
         backend = provider.get("imagegen_backend")
@@ -1793,7 +1842,10 @@ def _configure_provider(provider: dict, config: dict):
         _print_success(f"  {provider['name']} configured!")
         plugin_name = provider.get("image_gen_plugin_name")
         if plugin_name:
-            _select_plugin_image_gen_provider(plugin_name, config)
+            _select_plugin_image_gen_provider(
+                plugin_name, config,
+                use_gateway=managed_feature == "image_gen",
+            )
             return
         # Imagegen backends prompt for model selection after env vars are in.
         backend = provider.get("imagegen_backend")
@@ -2017,7 +2069,10 @@ def _reconfigure_provider(provider: dict, config: dict):
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
         plugin_name = provider.get("image_gen_plugin_name")
         if plugin_name:
-            _select_plugin_image_gen_provider(plugin_name, config)
+            _select_plugin_image_gen_provider(
+                plugin_name, config,
+                use_gateway=managed_feature == "image_gen",
+            )
             return
         # Imagegen backends prompt for model selection on reconfig too.
         backend = provider.get("imagegen_backend")
@@ -2048,7 +2103,10 @@ def _reconfigure_provider(provider: dict, config: dict):
     # Imagegen backends prompt for model selection on reconfig too.
     plugin_name = provider.get("image_gen_plugin_name")
     if plugin_name:
-        _select_plugin_image_gen_provider(plugin_name, config)
+        _select_plugin_image_gen_provider(
+            plugin_name, config,
+            use_gateway=managed_feature == "image_gen",
+        )
         return
 
     backend = provider.get("imagegen_backend")

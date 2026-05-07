@@ -1928,6 +1928,14 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "BFL_API_KEY": {
+        "description": "Black Forest Labs API key for image generation. Optional when using a Nous Subscription -- the managed gateway handles auth.",
+        "prompt": "BFL API key",
+        "url": "https://api.bfl.ai/auth/profile",
+        "tools": ["image_generate"],
+        "password": True,
+        "category": "tool",
+    },
     "TINKER_API_KEY": {
         "description": "Tinker API key for RL training",
         "prompt": "Tinker API key",
