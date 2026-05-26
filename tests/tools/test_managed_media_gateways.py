@@ -102,6 +102,11 @@ def _install_fake_fal_client(captured):
             captured["cancel_url"] = cancel_url
             captured["handle_client"] = client
 
+        def get(self):
+            # Matches the real ``fal_client.SyncRequestHandle.get()`` shape —
+            # video callers poll the handle for the completed result.
+            return {"video": {"url": "https://fake-fal/video.mp4"}}
+
     class SyncClient:
         def __init__(self, key=None, default_timeout=120.0):
             captured["sync_client_inits"] = captured.get("sync_client_inits", 0) + 1
@@ -120,6 +125,21 @@ def _install_fake_fal_client(captured):
         ),
     )
     sys.modules["fal_client"] = fal_client_module
+    # The shared managed-FAL client cache in ``tools.fal_common`` is keyed
+    # on gateway origin + token; if a prior test left it populated, the
+    # cached ``_ManagedFalSyncClient`` will still reference the previous
+    # fake's ``_maybe_retry_request`` (closed over an old ``captured``
+    # dict). Reset the cache whenever we install a fresh fake so tests
+    # observe their own submits.
+    try:
+        fal_common_module = sys.modules.get("tools.fal_common")
+        if fal_common_module is None:
+            fal_common_module = _load_tool_module(
+                "tools.fal_common", "fal_common.py"
+            )
+        fal_common_module.reset_shared_managed_fal_client()
+    except Exception:
+        pass
     return fal_client_module
 
 
@@ -211,6 +231,121 @@ def test_managed_fal_submit_reuses_cached_sync_client(monkeypatch):
 
     assert captured["sync_client_inits"] == 1
     assert captured["http_client"] is first_client
+
+
+def _install_fake_video_gen_provider_deps():
+    """Stub the imports the video FAL plugin reaches for at module load."""
+    sys.modules.setdefault(
+        "agent",
+        types.ModuleType("agent"),
+    )
+    video_gen_provider = types.ModuleType("agent.video_gen_provider")
+
+    class _VideoGenProvider:  # minimal duck-typed base for the plugin
+        pass
+
+    def _success_response(**kwargs):
+        return {"success": True, **kwargs}
+
+    def _error_response(**kwargs):
+        return {"success": False, **kwargs}
+
+    video_gen_provider.VideoGenProvider = _VideoGenProvider
+    video_gen_provider.success_response = _success_response
+    video_gen_provider.error_response = _error_response
+    sys.modules["agent.video_gen_provider"] = video_gen_provider
+
+
+def _load_video_fal_plugin():
+    """Import the FAL video plugin freshly so monkeypatches stick."""
+    plugins_pkg = sys.modules.get("plugins") or types.ModuleType("plugins")
+    plugins_pkg.__path__ = [
+        str(Path(__file__).resolve().parents[2] / "plugins")
+    ]
+    sys.modules["plugins"] = plugins_pkg
+    video_gen_pkg = types.ModuleType("plugins.video_gen")
+    video_gen_pkg.__path__ = [
+        str(Path(__file__).resolve().parents[2] / "plugins" / "video_gen")
+    ]
+    sys.modules["plugins.video_gen"] = video_gen_pkg
+    plugin_path = (
+        Path(__file__).resolve().parents[2]
+        / "plugins"
+        / "video_gen"
+        / "fal"
+        / "__init__.py"
+    )
+    spec = spec_from_file_location("plugins.video_gen.fal", plugin_path)
+    assert spec and spec.loader
+    module = module_from_spec(spec)
+    sys.modules["plugins.video_gen.fal"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_managed_fal_video_submit_uses_gateway_origin_and_nous_token(monkeypatch):
+    """Video plugin submits to the managed fal-queue gateway when no
+    direct FAL_KEY is set, matching the image-gen managed flow."""
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_fal_client(captured)
+    _install_fake_video_gen_provider_deps()
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+
+    fal_plugin = _load_video_fal_plugin()
+    monkeypatch.setattr(fal_plugin.uuid, "uuid4", lambda: "fal-video-submit-1")
+
+    provider = fal_plugin.FALVideoGenProvider()
+    result = provider.generate(
+        "a happy dog",
+        model="pixverse-v6",
+    )
+
+    assert result["success"] is True
+    assert captured["submit_via"] == "managed_client"
+    assert captured["client_key"] == "nous-token"
+    assert captured["submit_url"] == (
+        "http://127.0.0.1:3009/fal-ai/pixverse/v6/text-to-video"
+    )
+    assert captured["method"] == "POST"
+    assert captured["arguments"]["prompt"] == "a happy dog"
+    assert captured["headers"] == {"x-idempotency-key": "fal-video-submit-1"}
+
+
+def test_managed_fal_video_falls_back_to_direct_when_fal_key_set(monkeypatch):
+    """When FAL_KEY is present and use_gateway is not opted in, the video
+    plugin uses fal_client.subscribe directly (not the managed gateway).
+    """
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_video_gen_provider_deps()
+
+    direct_calls = []
+
+    def _direct_subscribe(endpoint, arguments=None, with_logs=False):
+        direct_calls.append({"endpoint": endpoint, "arguments": arguments, "with_logs": with_logs})
+        return {"video": {"url": "https://fake/out.mp4"}}
+
+    fake_fal = types.SimpleNamespace(subscribe=_direct_subscribe)
+    sys.modules["fal_client"] = fake_fal  # type: ignore[assignment]
+
+    monkeypatch.setenv("FAL_KEY", "direct-fal-key")
+    monkeypatch.delenv("FAL_QUEUE_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+
+    fal_plugin = _load_video_fal_plugin()
+    monkeypatch.setattr(fal_plugin, "_resolve_managed_fal_gateway", lambda: None)
+
+    result = fal_plugin.FALVideoGenProvider().generate(
+        "a happy dog",
+        model="pixverse-v6",
+    )
+
+    assert result["success"] is True
+    assert direct_calls and direct_calls[0]["endpoint"] == "fal-ai/pixverse/v6/text-to-video"
+    assert direct_calls[0]["with_logs"] is False
 
 
 def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatch, tmp_path):

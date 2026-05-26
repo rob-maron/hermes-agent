@@ -1,6 +1,6 @@
 """Shared FAL.ai SDK plumbing.
 
-Holds the stateless atoms that every FAL-backed tool needs:
+Holds the atoms that every FAL-backed tool needs:
 
 * :func:`import_fal_client` — lazy import + ``lazy_deps`` integration so
   ``fal_client`` isn't pulled at cold start (it added ~64 ms per CLI
@@ -11,22 +11,28 @@ Holds the stateless atoms that every FAL-backed tool needs:
 * :func:`_normalize_fal_queue_url_format`, :func:`_extract_http_status`
   — small helpers used by both the managed client wrapper and
   ``_submit_fal_request``.
+* :func:`resolve_managed_fal_gateway_for_toolset` — shared
+  managed-or-direct selector keyed by the toolset config section
+  (``image_gen`` or ``video_gen``).
+* :func:`get_or_create_shared_managed_fal_client` — process-wide cache
+  of :class:`_ManagedFalSyncClient` keyed by gateway origin + token,
+  shared across all FAL-backed toolsets because they all hit the same
+  ``fal-queue-gateway`` host.
 
-Stateful pieces (cache globals, ``_managed_fal_client*`` selectors,
-``_submit_fal_request``) intentionally stay on
-:mod:`tools.image_generation_tool`. That module is the patch target for
-existing test suites (``tests/tools/test_image_generation.py``,
-``tests/tools/test_managed_media_gateways.py``) and for the
-``plugins/image_gen/fal/`` plugin's ``_it`` indirection — moving the
-caches here would silently defeat ``monkeypatch.setattr(image_tool,
-"_managed_fal_client", None)`` because the lookups would go against
-``fal_common``'s namespace instead. See the per-rule walkthrough at
-issue #26241 for details.
+Per-toolset wrappers in :mod:`tools.image_generation_tool` (``_resolve_managed_fal_gateway``,
+``_get_managed_fal_client``, ``_submit_fal_request``) delegate to these
+helpers while preserving the legacy patch targets that existing test
+suites (``tests/tools/test_image_generation.py``,
+``tests/tools/test_managed_media_gateways.py``) and the
+``plugins/image_gen/fal/`` plugin's ``_it`` indirection rely on. New
+toolsets should call the shared helpers here directly instead of growing
+parallel state.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Union
+import threading
+from typing import Any, Callable, Dict, Optional, Union
 from urllib.parse import urlencode
 
 
@@ -161,3 +167,111 @@ class _ManagedFalSyncClient:
             cancel_url=data["cancel_url"],
             client=self._http_client,
         )
+
+
+# ---------------------------------------------------------------------------
+# Shared managed-FAL helpers (used by both image and video toolsets)
+# ---------------------------------------------------------------------------
+
+_shared_managed_fal_client: Optional[_ManagedFalSyncClient] = None
+_shared_managed_fal_client_config: Optional[tuple] = None
+_shared_managed_fal_client_lock = threading.Lock()
+
+
+def resolve_managed_fal_gateway_for_toolset(toolset_key: str):
+    """Return managed fal-queue gateway config for a toolset config section.
+
+    Used by both ``image_gen`` and ``video_gen``. Returns ``None`` when
+    the user has a direct ``FAL_KEY`` and has not explicitly opted into
+    the gateway for ``toolset_key``; otherwise returns the resolved
+    :class:`~tools.managed_tool_gateway.ManagedToolGatewayConfig` (or
+    ``None`` if no Nous subscription is available).
+    """
+    from tools.managed_tool_gateway import resolve_managed_tool_gateway
+    from tools.tool_backend_helpers import fal_key_is_configured, prefers_gateway
+
+    if fal_key_is_configured() and not prefers_gateway(toolset_key):
+        return None
+    return resolve_managed_tool_gateway("fal-queue")
+
+
+def get_or_create_shared_managed_fal_client(
+    managed_gateway,
+    fal_client_module: Any,
+) -> _ManagedFalSyncClient:
+    """Return a process-wide cached :class:`_ManagedFalSyncClient`.
+
+    The cache key is ``(gateway_origin, nous_user_token)`` — both image
+    and video generation hit the same fal-queue gateway with the same
+    Nous access token, so they share the underlying httpx.Client and
+    avoid creating a fresh per-call connection pool.
+    """
+    global _shared_managed_fal_client, _shared_managed_fal_client_config
+
+    client_config = (
+        managed_gateway.gateway_origin.rstrip("/"),
+        managed_gateway.nous_user_token,
+    )
+    with _shared_managed_fal_client_lock:
+        if (
+            _shared_managed_fal_client is not None
+            and _shared_managed_fal_client_config == client_config
+        ):
+            return _shared_managed_fal_client
+
+        _shared_managed_fal_client = _ManagedFalSyncClient(
+            fal_client_module,
+            key=managed_gateway.nous_user_token,
+            queue_run_origin=managed_gateway.gateway_origin,
+        )
+        _shared_managed_fal_client_config = client_config
+        return _shared_managed_fal_client
+
+
+def reset_shared_managed_fal_client() -> None:
+    """Drop the cached managed FAL client (used by tests for isolation)."""
+    global _shared_managed_fal_client, _shared_managed_fal_client_config
+    with _shared_managed_fal_client_lock:
+        _shared_managed_fal_client = None
+        _shared_managed_fal_client_config = None
+
+
+def submit_via_managed_fal_gateway(
+    model: str,
+    arguments: Dict[str, Any],
+    *,
+    fal_client_module: Any,
+    managed_gateway,
+    idempotency_key: str,
+    not_allowlisted_hint: Optional[str] = None,
+) -> Any:
+    """Submit a FAL request through the managed gateway, with a helpful
+    ValueError on 4xx responses (allowlist miss, billing gate, etc.).
+
+    Returns the same ``SyncRequestHandle`` shape as ``fal_client.submit``,
+    so callers can `.get()` it for the result.
+    """
+    managed_client = get_or_create_shared_managed_fal_client(
+        managed_gateway, fal_client_module
+    )
+    request_headers = {"x-idempotency-key": idempotency_key}
+    try:
+        return managed_client.submit(
+            model,
+            arguments=arguments,
+            headers=request_headers,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface a clearer error
+        status = _extract_http_status(exc)
+        if status is not None and 400 <= status < 500:
+            hint = not_allowlisted_hint or (
+                "Either:\n"
+                "  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
+                "  • Pick a different model via `hermes tools`."
+            )
+            raise ValueError(
+                f"Nous Subscription gateway rejected model '{model}' "
+                f"(HTTP {status}). This model may not yet be enabled on "
+                f"the Nous Portal's FAL proxy. {hint}"
+            ) from exc
+        raise

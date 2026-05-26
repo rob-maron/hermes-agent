@@ -114,6 +114,7 @@ class TestFamilyRouting:
         def _subscribe(endpoint, arguments=None, with_logs=False):
             captured["endpoint"] = endpoint
             captured["arguments"] = arguments
+            captured["with_logs"] = with_logs
             return {"video": {"url": "https://fake/out.mp4"}}
         fake.subscribe = _subscribe  # type: ignore
         monkeypatch.setitem(sys.modules, "fal_client", fake)
@@ -121,6 +122,10 @@ class TestFamilyRouting:
         # Reset the lazy global so it picks up our stub
         from plugins.video_gen import fal as fal_plugin
         fal_plugin._fal_client = None
+
+        # Force the direct (non-managed) path so the test doesn't depend
+        # on Nous subscription state.
+        monkeypatch.setattr(fal_plugin, "_resolve_managed_fal_gateway", lambda: None)
 
         monkeypatch.setenv("FAL_KEY", "test")
         return captured

@@ -40,12 +40,26 @@ def matrix_env(tmp_path, monkeypatch):
     fal_calls: List[Dict[str, Any]] = []
     xai_calls: List[Dict[str, Any]] = []
 
-    # fal_client stub
+    # fal_client stub — the FAL video plugin now uses the queue submit-and-poll
+    # flow (`submit(endpoint, ...) → handle.get()`), matching the managed gateway
+    # path, so the stub mirrors that shape.
     fake_fal = types.ModuleType("fal_client")
-    def _subscribe(endpoint, arguments=None, with_logs=False):
+
+    class _FakeHandle:
+        def __init__(self, endpoint):
+            self._endpoint = endpoint
+
+        def get(self):
+            return {
+                "video": {
+                    "url": f"https://fake-fal/{self._endpoint.replace('/', '_')}.mp4"
+                }
+            }
+
+    def _submit(endpoint, arguments=None, headers=None):
         fal_calls.append({"endpoint": endpoint, "arguments": arguments})
-        return {"video": {"url": f"https://fake-fal/{endpoint.replace('/','_')}.mp4"}}
-    fake_fal.subscribe = _subscribe  # type: ignore
+        return _FakeHandle(endpoint)
+    fake_fal.submit = _submit  # type: ignore
     monkeypatch.setitem(__import__("sys").modules, "fal_client", fake_fal)
 
     # httpx stub for xAI
@@ -77,9 +91,12 @@ def matrix_env(tmp_path, monkeypatch):
     async def _no_sleep(*a, **k): return None
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
 
-    # Reset FAL plugin's lazy fal_client cache so it picks up the stub
+    # Reset FAL plugin's lazy fal_client cache so it picks up the stub,
+    # and force the direct (non-managed) path so the matrix doesn't depend
+    # on Nous subscription state.
     from plugins.video_gen import fal as fal_plugin
     fal_plugin._fal_client = None
+    monkeypatch.setattr(fal_plugin, "_resolve_managed_fal_gateway", lambda: None)
 
     # Force discovery
     from hermes_cli.plugins import _ensure_plugins_discovered

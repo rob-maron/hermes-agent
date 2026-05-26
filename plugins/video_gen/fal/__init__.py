@@ -26,14 +26,22 @@ Selection precedence for the active family:
     4. ``video_gen.model`` in ``config.yaml`` (when it's one of our family IDs)
     5. ``DEFAULT_MODEL``
 
-Authentication via ``FAL_KEY``. Output is an HTTPS URL from FAL's CDN; the
-gateway downloads and delivers it.
+Authentication: when the user has a Nous subscription and
+``video_gen.use_gateway`` is true (or no direct ``FAL_KEY`` is set), the
+request flows through the Nous-managed ``fal-queue-gateway`` so Nous can
+meter and bill it on the user's behalf. Otherwise, ``FAL_KEY`` is used
+to call FAL.ai directly. The shared ``_ManagedFalSyncClient`` cache in
+:mod:`tools.fal_common` is reused with the image-gen toolset.
+
+Output is an HTTPS URL from FAL's CDN; the gateway downloads and
+delivers it.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.video_gen_provider import (
@@ -282,7 +290,7 @@ def _build_payload(
 
 
 # ---------------------------------------------------------------------------
-# fal_client lazy import (shared with image_generation_tool via fal_common)
+# fal_client lazy import + managed-gateway submit (shared with image via fal_common)
 # ---------------------------------------------------------------------------
 
 _fal_client: Any = None
@@ -300,6 +308,50 @@ def _load_fal_client() -> Any:
     from tools.fal_common import import_fal_client
     _fal_client = import_fal_client()
     return _fal_client
+
+
+def _resolve_managed_fal_gateway():
+    """Return managed fal-queue gateway config for the video toolset.
+
+    Mirrors :func:`tools.image_generation_tool._resolve_managed_fal_gateway`
+    but reads the ``video_gen.use_gateway`` flag instead of ``image_gen``.
+    Kept as a module-level function so tests can ``monkeypatch.setattr``
+    it on this module if they need a no-op.
+    """
+    from tools.fal_common import resolve_managed_fal_gateway_for_toolset
+    return resolve_managed_fal_gateway_for_toolset("video_gen")
+
+
+def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]) -> Any:
+    """Submit a FAL video job through the managed gateway when configured,
+    otherwise preserve the direct ``fal_client.subscribe`` flow.
+
+    Returns the completed result payload in both cases.
+    """
+    fal_client_module = _load_fal_client()
+    request_headers = {"x-idempotency-key": str(uuid.uuid4())}
+    managed_gateway = _resolve_managed_fal_gateway()
+    if managed_gateway is None:
+        return fal_client_module.subscribe(
+            endpoint,
+            arguments=arguments,
+            with_logs=False,
+        )
+
+    from tools.fal_common import submit_via_managed_fal_gateway
+    handle = submit_via_managed_fal_gateway(
+        endpoint,
+        arguments,
+        fal_client_module=fal_client_module,
+        managed_gateway=managed_gateway,
+        idempotency_key=request_headers["x-idempotency-key"],
+        not_allowlisted_hint=(
+            "Either:\n"
+            "  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
+            "  • Pick a different family via `hermes tools` → Video Generation."
+        ),
+    )
+    return handle.get()
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +375,10 @@ class FALVideoGenProvider(VideoGenProvider):
         return "FAL"
 
     def is_available(self) -> bool:
-        if not os.environ.get("FAL_KEY", "").strip():
+        # Available when direct FAL_KEY is set OR the managed Nous gateway
+        # resolves a fal-queue origin (mirrors the image plugin).
+        from tools.tool_backend_helpers import fal_key_is_configured
+        if not fal_key_is_configured() and _resolve_managed_fal_gateway() is None:
             return False
         try:
             import fal_client  # noqa: F401
@@ -394,11 +449,14 @@ class FALVideoGenProvider(VideoGenProvider):
         seed: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        if not os.environ.get("FAL_KEY", "").strip():
+        from tools.tool_backend_helpers import fal_key_is_configured
+        managed_gateway = _resolve_managed_fal_gateway()
+        if not fal_key_is_configured() and managed_gateway is None:
             return error_response(
                 error=(
-                    "FAL_KEY not set. Run `hermes tools` → Video Generation "
-                    "→ FAL to configure."
+                    "FAL is not configured. Either set FAL_KEY for direct "
+                    "access, or enable the Nous Subscription managed FAL "
+                    "gateway via `hermes tools` → Video Generation."
                 ),
                 error_type="auth_required",
                 provider="fal",
@@ -406,7 +464,7 @@ class FALVideoGenProvider(VideoGenProvider):
             )
 
         try:
-            fal_client = _load_fal_client()
+            _load_fal_client()
         except ImportError:
             return error_response(
                 error="fal_client Python package not installed (pip install fal-client)",
@@ -467,11 +525,7 @@ class FALVideoGenProvider(VideoGenProvider):
         )
 
         try:
-            result = fal_client.subscribe(
-                endpoint,
-                arguments=payload,
-                with_logs=False,
-            )
+            result = _submit_fal_video_request(endpoint, payload)
         except Exception as exc:
             logger.warning(
                 "FAL video gen failed (family=%s, endpoint=%s): %s",

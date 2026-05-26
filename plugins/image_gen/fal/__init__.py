@@ -13,7 +13,7 @@ so:
 * the existing test suite (``tests/tools/test_image_generation.py``,
   ``tests/tools/test_managed_media_gateways.py``) keeps patching
   ``image_tool._submit_fal_request`` / ``image_tool.fal_client`` /
-  ``image_tool._managed_fal_client`` without modification, and
+  ``image_tool._get_managed_fal_client`` without modification, and
 * there's exactly one canonical FAL code path on disk — the plugin is a
   registration adapter, not a parallel implementation.
 

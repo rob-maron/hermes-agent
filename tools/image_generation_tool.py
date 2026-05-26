@@ -24,7 +24,6 @@ import json
 import logging
 import os
 import datetime
-import threading
 import uuid
 from typing import Any, Dict, Optional
 
@@ -61,8 +60,10 @@ from tools.fal_common import (
     _ManagedFalSyncClient,
     _extract_http_status,
     _normalize_fal_queue_url_format,  # noqa: F401 — re-exported for tests
+    get_or_create_shared_managed_fal_client,
+    resolve_managed_fal_gateway_for_toolset,
 )
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.managed_tool_gateway import resolve_managed_tool_gateway  # noqa: F401 — re-exported for tests
 from tools.tool_backend_helpers import (
     fal_key_is_configured,
     managed_nous_tools_enabled,
@@ -341,44 +342,24 @@ UPSCALER_NUM_INFERENCE_STEPS = 18
 
 
 _debug = DebugSession("image_tools", env_var="IMAGE_TOOLS_DEBUG")
-_managed_fal_client = None
-_managed_fal_client_config = None
-_managed_fal_client_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
 # Managed FAL gateway (Nous Subscription)
 # ---------------------------------------------------------------------------
+# These are thin wrappers around the shared helpers in ``tools.fal_common``.
+# They stay on this module because existing tests (``test_image_generation``,
+# ``test_managed_media_gateways``) and the image-gen plugin's ``_it``
+# indirection patch them by attribute name on ``image_generation_tool``.
 def _resolve_managed_fal_gateway():
-    """Return managed fal-queue gateway config when the user prefers the gateway
-    or direct FAL credentials are absent."""
-    if fal_key_is_configured() and not prefers_gateway("image_gen"):
-        return None
-    return resolve_managed_tool_gateway("fal-queue")
+    """Return managed fal-queue gateway config for the image toolset."""
+    return resolve_managed_fal_gateway_for_toolset("image_gen")
 
 
 def _get_managed_fal_client(managed_gateway):
     """Reuse the managed FAL client so its internal httpx.Client is not leaked per call."""
-    global _managed_fal_client, _managed_fal_client_config
-
-    client_config = (
-        managed_gateway.gateway_origin.rstrip("/"),
-        managed_gateway.nous_user_token,
-    )
-    with _managed_fal_client_lock:
-        if _managed_fal_client is not None and _managed_fal_client_config == client_config:
-            return _managed_fal_client
-
-        # Resolve fal_client on the legacy module — preserves the test
-        # pattern of monkey-patching ``image_generation_tool.fal_client``.
-        _load_fal_client()
-        _managed_fal_client = _ManagedFalSyncClient(
-            fal_client,
-            key=managed_gateway.nous_user_token,
-            queue_run_origin=managed_gateway.gateway_origin,
-        )
-        _managed_fal_client_config = client_config
-        return _managed_fal_client
+    _load_fal_client()
+    return get_or_create_shared_managed_fal_client(managed_gateway, fal_client)
 
 
 def _submit_fal_request(model: str, arguments: Dict[str, Any]):

@@ -337,11 +337,26 @@ TOOL_CATEGORIES = {
     "video_gen": {
         "name": "Video Generation",
         "icon": "🎬",
-        # Providers list is intentionally empty — every video gen backend
-        # is a plugin, surfaced by ``_plugin_video_gen_providers()`` and
-        # injected by ``_visible_providers``. Mirrors the design we'll
-        # converge image_gen toward.
-        "providers": [],
+        # Per-vendor rows for each FAL family (plus any future video
+        # backends) are injected at runtime from ``plugins.video_gen.<vendor>``
+        # via ``_plugin_video_gen_providers()`` in ``_visible_providers``.
+        # Only the non-provider UX row stays here:
+        #   - "Nous Subscription" — managed FAL video generation billed
+        #     via the Nous subscription (requires_nous_auth +
+        #     override_env_vars). Uses the fal video plugin as the
+        #     underlying backend but routes through the managed gateway.
+        "providers": [
+            {
+                "name": "Nous Subscription",
+                "badge": "subscription",
+                "tag": "Managed FAL video generation billed to your subscription",
+                "env_vars": [],
+                "requires_nous_auth": True,
+                "managed_nous_feature": "video_gen",
+                "override_env_vars": ["FAL_KEY"],
+                "videogen_backend": "fal",
+            },
+        ],
     },
     "x_search": {
         "name": "X (Twitter) Search",
@@ -1413,7 +1428,7 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
         except Exception:
             return False
 
-    if ts_key in {"web", "image_gen", "tts", "browser"}:
+    if ts_key in {"web", "image_gen", "video_gen", "tts", "browser"}:
         features = get_nous_subscription_features(config)
         feature = features.features.get(ts_key)
         if feature and (feature.available or feature.managed_by_nous):
@@ -2063,6 +2078,15 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
                 if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
                     return False
             return feature.managed_by_nous
+        if managed_feature == "video_gen":
+            video_cfg = config.get("video_gen", {})
+            if isinstance(video_cfg, dict):
+                configured_provider = video_cfg.get("provider")
+                if configured_provider not in {None, "", "fal"}:
+                    return False
+                if video_cfg.get("use_gateway") is not None and not is_truthy_value(video_cfg.get("use_gateway"), default=False):
+                    return False
+            return feature.managed_by_nous
         if provider.get("tts_provider"):
             return (
                 feature.managed_by_nous
@@ -2093,6 +2117,16 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
             provider["imagegen_backend"] == "fal"
             and configured_provider in {None, "", "fal"}
             and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
+        )
+    if provider.get("videogen_backend"):
+        video_cfg = config.get("video_gen", {})
+        if not isinstance(video_cfg, dict):
+            return False
+        configured_provider = video_cfg.get("provider")
+        return (
+            provider["videogen_backend"] == "fal"
+            and configured_provider in {None, "", "fal"}
+            and not is_truthy_value(video_cfg.get("use_gateway"), default=False)
         )
     return False
 
@@ -2481,6 +2515,15 @@ def _configure_provider(provider: dict, config: dict):
             img_cfg = config.setdefault("image_gen", {})
             if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
                 img_cfg["provider"] = "fal"
+            return
+        # Videogen backends — same shape as imagegen, but every backend is
+        # a plugin so we source the catalog from the plugin registry.
+        video_backend = provider.get("videogen_backend")
+        if video_backend:
+            _configure_videogen_model_for_plugin(video_backend, config)
+            vid_cfg = config.setdefault("video_gen", {})
+            if isinstance(vid_cfg, dict):
+                vid_cfg["provider"] = video_backend
         return
 
     # Prompt for each required env var
@@ -2554,6 +2597,13 @@ def _configure_provider(provider: dict, config: dict):
             img_cfg = config.setdefault("image_gen", {})
             if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
                 img_cfg["provider"] = "fal"
+            return
+        video_backend = provider.get("videogen_backend")
+        if video_backend:
+            _configure_videogen_model_for_plugin(video_backend, config)
+            vid_cfg = config.setdefault("video_gen", {})
+            if isinstance(vid_cfg, dict):
+                vid_cfg["provider"] = video_backend
 
 
 def _configure_simple_requirements(ts_key: str):
@@ -2785,6 +2835,15 @@ def _reconfigure_provider(provider: dict, config: dict):
                 if isinstance(img_cfg, dict):
                     img_cfg["provider"] = "fal"
                     img_cfg["use_gateway"] = False
+            return
+        video_backend = provider.get("videogen_backend")
+        if video_backend:
+            _configure_videogen_model_for_plugin(video_backend, config)
+            if video_backend == "fal":
+                vid_cfg = config.setdefault("video_gen", {})
+                if isinstance(vid_cfg, dict):
+                    vid_cfg["provider"] = "fal"
+                    vid_cfg["use_gateway"] = False
         return
 
     for var in env_vars:
@@ -2825,6 +2884,15 @@ def _reconfigure_provider(provider: dict, config: dict):
             if isinstance(img_cfg, dict):
                 img_cfg["provider"] = "fal"
                 img_cfg["use_gateway"] = False
+        return
+    video_backend = provider.get("videogen_backend")
+    if video_backend:
+        _configure_videogen_model_for_plugin(video_backend, config)
+        if video_backend == "fal":
+            vid_cfg = config.setdefault("video_gen", {})
+            if isinstance(vid_cfg, dict):
+                vid_cfg["provider"] = "fal"
+                vid_cfg["use_gateway"] = False
 
 
 def _reconfigure_simple_requirements(ts_key: str):
