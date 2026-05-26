@@ -83,6 +83,63 @@ def _extract_http_status(exc: BaseException) -> Optional[int]:
     return None
 
 
+def _extract_http_error_message(exc: BaseException) -> Optional[str]:
+    """Return a concise message from an HTTP error response when available."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            code = error.get("code")
+            if isinstance(message, str) and message.strip():
+                if isinstance(code, str) and code.strip():
+                    return f"{code}: {message.strip()}"
+                return message.strip()
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()[:500]
+    return None
+
+
+def _managed_fal_gateway_error_message(
+    *,
+    model: str,
+    status: int,
+    response_message: Optional[str],
+    hint: str,
+) -> str:
+    base = f"Nous Subscription gateway rejected model '{model}' (HTTP {status})"
+    if response_message:
+        base = f"{base}: {response_message}"
+
+    if status == 409:
+        return (
+            f"{base}. This is a request conflict, usually an idempotency/replay "
+            f"conflict or an upstream FAL conflict, not proof that the model is "
+            f"missing from the proxy. {hint}"
+        )
+
+    if status == 400 or status == 404:
+        return (
+            f"{base}. The model or payload may not be enabled/supported by "
+            f"the Nous Portal FAL proxy. {hint}"
+        )
+
+    return f"{base}. {hint}"
+
+
 class _ManagedFalSyncClient:
     """Small per-instance wrapper around ``fal_client.SyncClient`` for
     managed queue hosts.
@@ -270,8 +327,11 @@ def submit_via_managed_fal_gateway(
                 "  • Pick a different model via `hermes tools`."
             )
             raise ValueError(
-                f"Nous Subscription gateway rejected model '{model}' "
-                f"(HTTP {status}). This model may not yet be enabled on "
-                f"the Nous Portal's FAL proxy. {hint}"
+                _managed_fal_gateway_error_message(
+                    model=model,
+                    status=status,
+                    response_message=_extract_http_error_message(exc),
+                    hint=hint,
+                )
             ) from exc
         raise
