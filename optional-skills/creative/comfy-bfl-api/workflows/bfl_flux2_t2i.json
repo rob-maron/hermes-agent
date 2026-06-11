@@ -16,8 +16,8 @@
       "prompt": "a serene mountain lake at dawn, mist over the water, photorealistic",
       "safety_tolerance": 2,
       "output_format": "png",
-      "width": 0,
-      "height": 0,
+      "width": 1024,
+      "height": 1024,
       "seed": -1
     }
   },

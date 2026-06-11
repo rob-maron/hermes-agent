@@ -138,8 +138,10 @@ each workflow.
 6. **Kontext needs base64 input.** BFL edit nodes take `input_image` as a
    base64 STRING, not an IMAGE tensor — wire `LoadImage →
    ImageToBase64_BFL → input_image` (see `bfl_kontext_edit.json`).
-7. **`width`/`height` must be multiples of 32** for BFL nodes (0 = model
-   default); the node raises otherwise.
+7. **`width`/`height` must be multiples of 32 and at least 64.** The nodes
+   declare `min: 64` but ship `default: 0`, so the pack's own default fails
+   ComfyUI validation ("Value 0 smaller than min of 64") — always set real
+   dimensions (e.g. 1024x1024).
 8. **Node pack changes need a server restart.** ComfyUI imports custom nodes
    at startup; after updating the pack, `comfy stop` then relaunch.
 9. **No video through BFL.** BFL's API has no video models (their

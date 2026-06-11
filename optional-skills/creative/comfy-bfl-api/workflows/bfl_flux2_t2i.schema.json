@@ -5,8 +5,8 @@
     "prompt": { "node_id": "2", "field": "prompt", "type": "string" },
     "safety_tolerance": { "node_id": "2", "field": "safety_tolerance", "type": "int", "description": "0 (strictest) - 5" },
     "output_format": { "node_id": "2", "field": "output_format", "type": "string", "description": "png | jpeg" },
-    "width": { "node_id": "2", "field": "width", "type": "int", "description": "Multiple of 32; 0 = model default" },
-    "height": { "node_id": "2", "field": "height", "type": "int", "description": "Multiple of 32; 0 = model default" },
+    "width": { "node_id": "2", "field": "width", "type": "int", "description": "Multiple of 32, minimum 64 — 0 is rejected by validation despite being the node's default" },
+    "height": { "node_id": "2", "field": "height", "type": "int", "description": "Multiple of 32, minimum 64 — 0 is rejected by validation despite being the node's default" },
     "seed": { "node_id": "2", "field": "seed", "type": "int", "description": "-1 = random" },
     "filename_prefix": { "node_id": "3", "field": "filename_prefix", "type": "string" }
   }
