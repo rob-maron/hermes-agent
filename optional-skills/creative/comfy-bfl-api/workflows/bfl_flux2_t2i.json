@@ -1,0 +1,32 @@
+{
+  "1": {
+    "class_type": "FluxConfig_BFL",
+    "_meta": { "title": "BFL config" },
+    "inputs": {
+      "x_key": "",
+      "base_url": "https://api.bfl.ai/v1/",
+      "region": "none"
+    }
+  },
+  "2": {
+    "class_type": "Flux2Pro_BFL",
+    "_meta": { "title": "FLUX.2 [pro] text-to-image (BFL direct)" },
+    "inputs": {
+      "config": ["1", 0],
+      "prompt": "a serene mountain lake at dawn, mist over the water, photorealistic",
+      "safety_tolerance": 2,
+      "output_format": "png",
+      "width": 0,
+      "height": 0,
+      "seed": -1
+    }
+  },
+  "3": {
+    "class_type": "SaveImage",
+    "_meta": { "title": "Save image" },
+    "inputs": {
+      "images": ["2", 0],
+      "filename_prefix": "bfl_flux2_t2i"
+    }
+  }
+}

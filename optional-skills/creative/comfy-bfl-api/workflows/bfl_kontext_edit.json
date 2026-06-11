@@ -1,0 +1,49 @@
+{
+  "1": {
+    "class_type": "FluxConfig_BFL",
+    "_meta": { "title": "BFL config" },
+    "inputs": {
+      "x_key": "",
+      "base_url": "https://api.bfl.ai/v1/",
+      "region": "none"
+    }
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "_meta": { "title": "Input image" },
+    "inputs": {
+      "image": "example.png",
+      "upload": "image"
+    }
+  },
+  "3": {
+    "class_type": "ImageToBase64_BFL",
+    "_meta": { "title": "Encode for BFL API" },
+    "inputs": {
+      "image": ["2", 0],
+      "image_format": "png"
+    }
+  },
+  "4": {
+    "class_type": "FluxKontextPro_BFL",
+    "_meta": { "title": "FLUX Kontext [pro] edit (BFL direct)" },
+    "inputs": {
+      "config": ["1", 0],
+      "prompt": "turn this into a watercolor painting",
+      "input_image": ["3", 0],
+      "aspect_ratio": "none",
+      "prompt_upsampling": false,
+      "safety_tolerance": 2,
+      "output_format": "png",
+      "seed": -1
+    }
+  },
+  "5": {
+    "class_type": "SaveImage",
+    "_meta": { "title": "Save image" },
+    "inputs": {
+      "images": ["4", 0],
+      "filename_prefix": "bfl_kontext_edit"
+    }
+  }
+}
