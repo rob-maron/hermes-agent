@@ -5359,7 +5359,14 @@ def refresh_nous_oauth_pure(
             # None on every refresh and silently re-uses the dead endpoint —
             # the "falling back to default" warning never actually takes effect.
             refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-            state["inference_base_url"] = refreshed_url or DEFAULT_NOUS_INFERENCE_URL
+            # NOUS_INFERENCE_BASE_URL is the documented, user-set staging/dev
+            # escape hatch and is trusted (not network-sourced), so it wins over
+            # both the validated Portal URL and the production default.
+            state["inference_base_url"] = (
+                os.getenv("NOUS_INFERENCE_BASE_URL", "").strip().rstrip("/")
+                or refreshed_url
+                or DEFAULT_NOUS_INFERENCE_URL
+            )
             state["obtained_at"] = now.isoformat()
             state["expires_in"] = access_ttl
             state["expires_at"] = datetime.fromtimestamp(
@@ -5508,8 +5515,8 @@ def resolve_nous_runtime_credentials(
             or DEFAULT_NOUS_PORTAL_URL
         ).rstrip("/")
         inference_base_url = (
-            _optional_base_url(state.get("inference_base_url"))
-            or os.getenv("NOUS_INFERENCE_BASE_URL")
+            (os.getenv("NOUS_INFERENCE_BASE_URL") or "").strip()
+            or _optional_base_url(state.get("inference_base_url"))
             or DEFAULT_NOUS_INFERENCE_URL
         ).rstrip("/")
         client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
@@ -5638,7 +5645,13 @@ def resolve_nous_runtime_credentials(
                         # The local inference_base_url is persisted to state below
                         # (and used for the client), so healing it here suffices.
                         refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
-                        inference_base_url = refreshed_url or DEFAULT_NOUS_INFERENCE_URL
+                        # NOUS_INFERENCE_BASE_URL (user-set, trusted) wins over
+                        # the validated Portal URL — documented staging override.
+                        inference_base_url = (
+                            os.getenv("NOUS_INFERENCE_BASE_URL", "").strip().rstrip("/")
+                            or refreshed_url
+                            or DEFAULT_NOUS_INFERENCE_URL
+                        )
                         state["obtained_at"] = now.isoformat()
                         state["expires_in"] = access_ttl
                         state["expires_at"] = datetime.fromtimestamp(
