@@ -296,6 +296,10 @@ def auth_add_command(args) -> None:
             insecure=bool(getattr(args, "insecure", False)),
             ca_bundle=getattr(args, "ca_bundle", None),
         )
+        auth_mod._mark_nous_portal_base_url_trusted(
+            creds,
+            cli_portal_url=getattr(args, "portal_url", None),
+        )
         # Honor `--label <name>` so nous matches other providers' UX.  The
         # helper embeds this into providers.nous so that label_from_token
         # doesn't overwrite it on every subsequent load_pool("nous").
