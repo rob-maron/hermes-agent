@@ -1775,6 +1775,15 @@ export const zhOverrides = {
         effectScheduled: (targetName, effectiveAt, creditsDelta) =>
           `更改为 ${targetName}，于 ${effectiveAt} 生效。现在不扣费；在此之前保留当前套餐。${creditsDelta ? `每月额度变化：${creditsDelta}。` : ''}`
       },
+      keepGoingOnCredits: {
+        title: '用额度继续',
+        description: '包含的用量用完后，使用你的额度。关闭时，Hermes 等待重置。',
+        approveInBrowser: '请在浏览器中批准 Remote Spending 以更改此设置。批准后立即生效。',
+        openAgain: '再次打开',
+        cancel: '取消',
+        approvedRetry: 'Remote Spending 已批准，但更改未保存。',
+        tryAgain: '重试'
+      },
       autoReload: {
         threshold: '阈值',
         thresholdAria: '自动充值阈值',
@@ -1845,6 +1854,19 @@ export const zhOverrides = {
             captionDefault: '默认上限',
             captionSpending: '每月远程支出',
             valueUsed: (spent, limit) => `${limit} 中已用 ${spent}`
+          },
+          window: {
+            today: '今天',
+            week: '本周',
+            month: '本月',
+            topTier: '大型模型（每月）',
+            barLabel: title => `${title}已用包含用量`,
+            captionPaused: '已暂停：订阅付款失败',
+            captionTopTierUsedUp: '每月额度已用完，剩余部分由你的额度支付',
+            captionTopTierUsedUpKeepGoingOff: '每月额度已用完，其他包含的模型仍可使用',
+            captionResetsIn: duration => `${duration}后重置`,
+            captionIncluded: '包含用量',
+            valueUsed: percent => `已用 ${percent}`
           }
         },
         planCard: {
@@ -3969,7 +3991,26 @@ export const zhOverrides = {
     wasPrice: '原价',
     customModel: '自定义模型',
     addCustomModelAction: '添加自定义模型…',
-    customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5'
+    customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5',
+    today: '今日',
+    week: '本周',
+    month: '本月',
+    topTier: '大型模型（每月）',
+    included: '下列模型均已包含',
+    pausedRenewal: '已暂停：续费未到账',
+    includedUsedUp: '包含用量已用完',
+    limitReached: name => `已达${name}上限`,
+    limitNames: { day: '每日', month: '每月', top_tier: '每月大型模型', week: '每周' },
+    limitThenCredits: '付费模型现在使用你的额度（按量付费）',
+    limitThenCreditsLarge: '大型模型现在使用你的额度（按量付费）',
+    limitThenWait: '在此之前仅可使用免费模型',
+    limitThenWaitLarge: '在此之前大型模型已暂停',
+    percentUsed: percent => `已用 ${percent}`,
+    resetsIn: duration => `${duration}后重置`,
+    usageLevels: { free: '免费', top_tier: '大' },
+    sectionRecommended: '推荐',
+    sectionOther: '其他模型',
+    largeFootnote: '大型模型也会消耗你的每月大型模型额度。'
   },
 
   modelVisibility: {
@@ -4464,6 +4505,10 @@ export const zhOverrides = {
         ssl_cert_verification: {
           title: '安全连接失败',
           body: provider => `Hermes 无法验证与 ${provider} 的安全连接。请检查网络或代理设置，或切换服务商后重新发送。`
+        },
+        usage_window: {
+          title: '包含用量已用完',
+          body: '你的方案包含的用量已用完，将在重置后恢复。在 /topup 中添加额度即可继续。'
         }
       },
       errorLayers: {
@@ -4478,6 +4523,12 @@ export const zhOverrides = {
         streaming: '流式连接错误'
       },
       errorRetry: '重试',
+      errorSwitchToModel: (model, note) => (note ? `切换到 ${model}（${note}）` : `切换到 ${model}`),
+      errorSwitchModelFailed: '无法切换模型',
+      errorUseCredits: '使用额度',
+      errorUseCreditsFailed: '无法开启用额度继续',
+      errorAddCredits: '添加额度',
+      errorOpenBillingSettings: '打开账单设置',
       errorLimitResets: time => `限额将于 ${time} 重置`,
       errorRetryAtReset: time => `限额重置后重试（${time}）`,
       errorRetryScheduled: (time, wait) => `将于 ${time} 重试 — 还剩 ${wait}`,

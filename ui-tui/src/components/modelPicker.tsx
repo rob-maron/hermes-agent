@@ -2,6 +2,7 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { fuzzyRank } from '@hermes/shared/fuzzy'
 import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gateway-events'
 import { modelSearchText } from '@hermes/shared/model-search-text'
+import { hasTopTier, planBlocks, planLimitLine, sectionAt, usageLevel, usageTag } from '@hermes/shared/plan-usage'
 import { REASONING_EFFORTS } from '@hermes/shared/reasoning-effort'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -478,7 +479,10 @@ export function ModelPicker({
         }
 
         setStage('model')
-        setModelIdx(0)
+        // Window plans keep the current model in its section, so start the cursor on it.
+        setModelIdx(
+          provider.plan_usage?.kind === 'usage_window' ? Math.max(0, (provider.models ?? []).indexOf(currentModel)) : 0
+        )
         setFilter('')
 
         return
@@ -775,8 +779,21 @@ export function ModelPicker({
   }
 
   // ── Model selection stage ────────────────────────────────────────────
-  const { items, offset } = windowItems(models, modelIdx, VISIBLE)
-  const noModelMatches = !!filter.trim() && models.length === 0
+  // Window plans: up to two section titles ("Recommended" / "Other models") ride inside the list, so
+  // the window shrinks by two rows to keep the overlay's height fixed.
+  const filtering = !!filter.trim()
+  // A query is its own order, so no sections while filtering.
+  const sectioned = !filtering && sectionAt(provider, models, 0) !== null
+  const visibleModels = sectioned ? VISIBLE - 2 : VISIBLE
+  const { items, offset } = windowItems(models, modelIdx, visibleModels)
+  const noModelMatches = filtering && models.length === 0
+  const levelled = models.some(m => usageLevel(provider, m))
+  const nameWidth = levelled ? Math.min(Math.max(...models.map(m => m.length), 0), Math.max(10, width - 22)) : 0
+  // Window plans past an allowance: one line saying what happens next (pay as you go, or wait), in the
+  // footnote row; rows it stops are dimmed rather than annotated. Filtering hides nothing here (fixed row).
+  const limitLine = levelled ? planLimitLine(provider, Date.now(), M.plan) : ''
+  const footnote = limitLine || (hasTopTier(provider, models) ? M.plan.largeFootnote : '')
+  let sectionLines = 0
 
   return (
     <Box flexDirection="column" width={width}>
@@ -791,13 +808,13 @@ export function ModelPicker({
         {filter ? `${C.filter(filter)}▎` : M.provider.filterHint}
       </Text>
       <Text color={t.color.label} wrap="truncate-end">
-        {provider?.warning ? M.provider.warning(provider.warning) : ' '}
+        {provider?.warning ? M.provider.warning(provider.warning) : footnote || ' '}
       </Text>
       <Text color={t.color.muted} wrap="truncate-end">
         {offset > 0 ? C.moreAbove(offset) : ' '}
       </Text>
 
-      {Array.from({ length: VISIBLE }, (_, i) => {
+      {Array.from({ length: visibleModels }, (_, i) => {
         const row = items[i]
         const idx = offset + i
 
@@ -814,22 +831,39 @@ export function ModelPicker({
         }
 
         const prefix = modelIdx === idx ? '▸ ' : row === currentModel ? '* ' : '  '
+        const section = sectioned ? sectionAt(provider, models, idx) : null
+        // Window plans: a tag only for Large / Free; a model a full allowance stops is dimmed.
+        const tag = usageTag(provider, row)
+        const level = tag ? M.plan.levels[tag] : ''
+        const blocked = levelled && planBlocks(provider, row)
+
+        if (section) {
+          sectionLines += 1
+        }
 
         return (
-          <Text
-            color={t.color.muted}
-            {...chipRowProps(t, modelIdx === idx)}
-            key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
-            wrap="truncate-end"
-          >
-            {prefix}
-            {idx + 1}. {row}
-          </Text>
+          <Box flexDirection="column" key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}>
+            {section && (
+              <Text bold color={t.color.muted} wrap="truncate-end">
+                {section === 'recommended' ? M.plan.sectionRecommended : M.plan.sectionOther}
+              </Text>
+            )}
+            <Text color={t.color.muted} dimColor={blocked} {...chipRowProps(t, modelIdx === idx)} wrap="truncate-end">
+              {prefix}
+              {idx + 1}. {levelled ? `${row.padEnd(nameWidth)}  ${level}`.trimEnd() : row}
+            </Text>
+          </Box>
         )
       })}
+      {sectioned &&
+        Array.from({ length: 2 - sectionLines }, (_, i) => (
+          <Text color={t.color.muted} key={`section-pad-${i}`} wrap="truncate-end">
+            {' '}
+          </Text>
+        ))}
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {offset + VISIBLE < models.length ? C.moreBelow(models.length - offset - VISIBLE) : ' '}
+        {offset + visibleModels < models.length ? C.moreBelow(models.length - offset - visibleModels) : ' '}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">

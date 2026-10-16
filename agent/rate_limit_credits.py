@@ -109,7 +109,21 @@ class RateLimitCreditsMixin:
                             "(miss — producer off / non-Nous path / >TTL stale)")
             return
 
+        if state.is_usage_window and not any(k.lower() == "x-nous-credits-purchased-micros" for k in headers):
+            # A refused request's headers omit the top-up balance: keep the last known one, not "no credits".
+            prior = getattr(self, "_credits_state", None)
+            if prior is not None:
+                import dataclasses
+                state = dataclasses.replace(state, purchased_micros=prior.purchased_micros,
+                                            purchased_usd=prior.purchased_usd)
         _adopt_credits_state(self, state)
+        try:
+            # A reply that contradicts the cached plan (upgrade, cancel, a limit filled or reset)
+            # refreshes it once in the background, so pickers catch up without a new session.
+            from agent.plan_snapshot_sync import sync_plan_snapshot
+            sync_plan_snapshot(state)
+        except Exception:
+            pass
         if dev:
             # HERMES_DEV_CREDITS streams each capture to agent.log (`hermes logs -f`, grep 'credits ▸').
             spent = self.get_credits_spent_micros()
@@ -141,9 +155,29 @@ class RateLimitCreditsMixin:
                 latch = self._credits_latch = new_credits_latch()
             # Free-model gate: a depleted account can still inference on a free model. Local data only.
             model_is_free = is_free_tier_model(getattr(self, "model", "") or "", getattr(self, "base_url", "") or "")
-            if state.depleted and not model_is_free and rewarm_pricing_before_depleted_notice(self):
+            # Any blocking state (depleted, or a used-up window / large-model allowance) needs a warm catalog to
+            # tell a model billed elsewhere apart once the 300s pricing cache lapses.
+            blocking = state.depleted or state.window_exhausted or state.top_tier_exhausted
+            if blocking and not model_is_free and rewarm_pricing_before_depleted_notice(self):
                 return  # a cold catalog cannot say the model is billed elsewhere; the warm's re-run decides
-            to_show, to_clear = evaluate_credits_notices(state, latch, model_is_free=model_is_free)
+            model_is_top_tier = False
+            if state.is_usage_window and not model_is_free:
+                # The top-tier approach warning only matters while on a top-tier model (gateway mark).
+                from agent.plan_limits import cached_pricing, is_top_tier
+                model_is_top_tier = is_top_tier(getattr(self, "model", "") or "",
+                                                cached_pricing(getattr(self, "base_url", "") or ""))
+            session_id = getattr(self, "session_id", None)
+            if state.is_usage_window:
+                from agent.credits_tracker import restore_window_notices
+                restore_window_notices(session_id, latch)
+            to_show, to_clear = evaluate_credits_notices(
+                state, latch, model_is_free=model_is_free, model_is_top_tier=model_is_top_tier)
+            if state.is_usage_window:
+                from agent.credits_tracker import remember_window_notices
+                remember_window_notices(session_id, latch)
+            elif session_id:
+                from agent.credits_tracker import forget_window_notices
+                forget_window_notices(session_id)
             for key in to_clear:
                 self._emit_notice_clear(key)
             for notice in to_show:

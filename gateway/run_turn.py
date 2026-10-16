@@ -331,10 +331,15 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
-            return await self._hmwa_deliver_turn_response(
+            delivered = await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
             )
+            if isinstance(agent_result.get("usage_limit"), dict):
+                # After the reply lands: the limit sentence is the reply; the button follows it.
+                self._schedule_usage_limit_offer(event, agent_result["usage_limit"], session_key=session_key,
+                                                 generation=run_generation)
+            return delivered
 
         except Exception as e:
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)

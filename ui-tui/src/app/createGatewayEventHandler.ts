@@ -4,6 +4,7 @@ import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
 import type { MessageDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type { UsageLimit } from '@hermes/shared/plan-usage'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -18,7 +19,7 @@ import type {
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
-import { billingDialogCopy } from '../lib/billingDialog.js'
+import { billingDialogCopy, usageLimitDialog } from '../lib/billingDialog.js'
 import { type ImageAttachment, stageImagePath } from '../lib/imageAttachments.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
@@ -1765,7 +1766,53 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // this is the actionable layer. Set AFTER recordMessageComplete() so the
         // turn-idle resetFlowOverlays() (which clears `confirm`) can't wipe it;
         // the top-of-loop guard already scopes this to the active session.
-        if (ev.payload?.billing) {
+        const surface = ev.payload?.error_surface as
+          { code?: string; usage_limit?: UsageLimit | null } | null | undefined
+
+        const usageLimit = surface?.usage_limit
+
+        if (usageLimit) {
+          // A window plan's limit: one ask, switch to the plan's recommended model (this session)
+          // and re-send — or dismiss. The sentence is already in the transcript.
+          const dialog = usageLimitDialog(usageLimit)
+
+          patchOverlayState({
+            confirm: {
+              cancelLabel: dialog.cancelLabel,
+              confirmLabel: dialog.confirmLabel,
+              detail: dialog.detail,
+              onConfirm: () => {
+                if (!dialog.switchValue) {
+                  submitRef.current('/topup')
+
+                  return
+                }
+
+                // Switch first; re-send only once it landed (or was queued for the next turn).
+                void rpc<{ deferred?: boolean; value?: string }>('config.set', {
+                  key: 'model',
+                  session_id: getUiState().sid,
+                  value: dialog.switchValue
+                })
+                  .then(r => {
+                    if (!r?.value) {
+                      return sys('error: model switch failed')
+                    }
+
+                    sys(`model → ${r.value}`)
+                    patchUiState(state => ({
+                      ...state,
+                      info: state.info ? { ...state.info, model: r.value! } : state.info
+                    }))
+                    submitRef.current('/retry')
+                  })
+                  .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+              },
+              title: dialog.title
+            }
+          })
+        } else if (ev.payload?.billing && surface?.code !== 'usage_window') {
+          // A window plan's limit is not an empty wallet: its sentence is in the transcript already.
           const block = ev.payload.billing
           const copy = billingDialogCopy(block)
 

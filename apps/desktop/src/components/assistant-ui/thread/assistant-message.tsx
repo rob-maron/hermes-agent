@@ -16,6 +16,7 @@ import { requestModelMenuToggle } from '@/app/chat/composer/focus'
 import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
+import { useBillingApi } from '@/app/settings/billing/api'
 import { dispatchedTo } from '@/components/assistant-ui/thread/agent-delivery'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
 import {
@@ -47,7 +48,8 @@ import {
   formatLimitReset,
   formatResetClock,
   isOAuthReauthSurface,
-  scheduledRetryDelayMs
+  scheduledRetryDelayMs,
+  type UsageLimitSuggestion
 } from '@/lib/error-surface'
 import { errorCardText } from '@/lib/error-surface-copy'
 import { triggerHaptic } from '@/lib/haptics'
@@ -67,6 +69,7 @@ import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { requestBillingSettings } from '@/store/billing-block'
 import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
@@ -739,6 +742,87 @@ const CompressConversationAction: FC<{ label: string }> = ({ label }) => {
   )
 }
 
+// usage_window: "Switch to Model A" — the plan's recommended model that
+// still works past the limit (agent/plan_limits.py picked it). Switches THIS
+// session through the same slash path a typed `/model <id> --provider nous
+// --session` takes (session.info repaints the composer), then re-runs the
+// refused turn. Session-only on purpose: the user's default stays put.
+const SwitchToModelAction: FC<{ suggestion: UsageLimitSuggestion }> = ({ suggestion }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const aui = useAui()
+  const view = useSessionView()
+  const sessionId = useStore(view.$runtimeId)
+  const [busy, setBusy] = useState(false)
+
+  const switchAndRetry = useCallback(async () => {
+    const delegate = sessionTileDelegate()
+
+    if (!sessionId || !delegate) {
+      notifyError(new Error('slash delegate unavailable'), copy.errorSwitchModelFailed)
+
+      return
+    }
+
+    triggerHaptic('submit')
+    setBusy(true)
+
+    try {
+      await delegate.executeSlash(`/model ${suggestion.model} --provider ${suggestion.provider} --session`, sessionId)
+      aui.message().reload()
+    } catch (error) {
+      notifyError(error, copy.errorSwitchModelFailed)
+    } finally {
+      setBusy(false)
+    }
+  }, [aui, copy.errorSwitchModelFailed, sessionId, suggestion.model, suggestion.provider])
+
+  return (
+    <button className="aui-error-action" disabled={busy} onClick={() => void switchAndRetry()} type="button">
+      {busy && <Loader2Icon className="size-3 animate-spin" />}
+      {copy.errorSwitchToModel(suggestion.label, suggestion.note)}
+    </button>
+  )
+}
+
+// usage_window, Keep going off with a balance: "Use credits" turns the account
+// setting on (the same call as Settings → Billing's switch), then re-runs the
+// turn. A refusal (remote spending not allowed yet, step-up) opens Billing, which
+// explains and fixes it.
+const UseCreditsAction: FC = () => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const aui = useAui()
+  const api = useBillingApi()
+  const [busy, setBusy] = useState(false)
+
+  const turnOnCredits = useCallback(async () => {
+    triggerHaptic('submit')
+    setBusy(true)
+
+    try {
+      const result = await api.updateKeepGoingOnCredits(true)
+
+      if (result.ok) {
+        aui.message().reload()
+      } else {
+        requestBillingSettings()
+      }
+    } catch (error) {
+      notifyError(error, copy.errorUseCreditsFailed)
+    } finally {
+      setBusy(false)
+    }
+  }, [api, aui, copy.errorUseCreditsFailed])
+
+  return (
+    <button className="aui-error-action" disabled={busy} onClick={() => void turnOnCredits()} type="button">
+      {busy && <Loader2Icon className="size-3 animate-spin" />}
+      {copy.errorUseCredits}
+    </button>
+  )
+}
+
 // One client-side retry of THIS turn at the provider's own reset moment (#98852,
 // option B): arm → visible countdown + Cancel → fires `message().reload()` — the
 // exact call behind the Retry button — exactly once. Nothing persists: closing
@@ -931,8 +1015,12 @@ const ErrorRecoveryActions: FC = () => {
   // Retry will work instead of guessing (#98852). Informational only: no automatic retry.
   const limitReset = formatLimitReset(surface?.resetsAt)
 
+  const suggestion = surface?.usageLimit?.suggestions[0]
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
+      {plan.switchToModel && suggestion && <SwitchToModelAction suggestion={suggestion} />}
+      {plan.useCredits && <UseCreditsAction />}
       {plan.editMessage && <EditPreviousMessageAction label={copy.editMessage} />}
       {plan.compress && <CompressConversationAction label={copy.errorCompressConversation} />}
       {plan.chooseModel && (
@@ -990,22 +1078,35 @@ const ErrorRecoveryActions: FC = () => {
         </span>
       )}
       {plan.retry && surface?.resetsAt !== undefined && <ScheduledRetryAction resetsAt={surface.resetsAt} />}
-      {plan.switchProvider && inRouter && <SwitchProviderAction label={copy.errorSwitchProvider} />}
-      {localFolders && (
+      {plan.openBilling && (
+        <button className="aui-error-action" onClick={() => requestBillingSettings()} type="button">
+          {copy.errorOpenBillingSettings}
+        </button>
+      )}
+      {plan.switchProvider && inRouter && (
+        <SwitchProviderAction
+          label={surface?.code === 'usage_window' ? copy.errorChooseModel : copy.errorSwitchProvider}
+        />
+      )}
+      {plan.diagnostics && localFolders && (
         <button className="aui-error-action" onClick={() => void openLogs()} type="button">
           {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
         </button>
       )}
-      <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
-        <Upload className="size-3" />
-        {copy.errorSendDiagnostics}
-      </button>
-      <CopyButton
-        appearance="inline"
-        className="aui-error-action"
-        label={copy.errorCopyDiagnostics}
-        text={diagnosticsText}
-      />
+      {plan.diagnostics && (
+        <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
+          <Upload className="size-3" />
+          {copy.errorSendDiagnostics}
+        </button>
+      )}
+      {plan.diagnostics && (
+        <CopyButton
+          appearance="inline"
+          className="aui-error-action"
+          label={copy.errorCopyDiagnostics}
+          text={diagnosticsText}
+        />
+      )}
     </div>
   )
 }

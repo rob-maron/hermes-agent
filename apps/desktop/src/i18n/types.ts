@@ -1603,6 +1603,17 @@ export interface Translations extends NoticeTranslations {
         cancel: string
         effectScheduled: (targetName: string, effectiveAt: string, creditsDelta: string) => string
       }
+      keepGoingOnCredits: {
+        title: string
+        description: string
+        /** Shown under the switch while the Remote Spending approval is open in the browser. */
+        approveInBrowser: string
+        openAgain: string
+        cancel: string
+        /** Approved, but the change was still refused: shown with a Try again button. */
+        approvedRetry: string
+        tryAgain: string
+      }
       autoReload: {
         threshold: string
         thresholdAria: string
@@ -1670,6 +1681,19 @@ export interface Translations extends NoticeTranslations {
             captionDefault: string
             captionSpending: string
             valueUsed: (spent: string, limit: string) => string
+          }
+          window: {
+            today: string
+            week: string
+            month: string
+            topTier: string
+            barLabel: (title: string) => string
+            captionPaused: string
+            captionTopTierUsedUp: string
+            captionTopTierUsedUpKeepGoingOff: string
+            captionResetsIn: (duration: string) => string
+            captionIncluded: string
+            valueUsed: (percent: string) => string
           }
         }
         planCard: {
@@ -3560,6 +3584,28 @@ export interface Translations extends NoticeTranslations {
     customModel: string
     addCustomModelAction: string
     customModelPlaceholder: string
+    today: string
+    week: string
+    month: string
+    topTier: string
+    included: string
+    pausedRenewal: string
+    includedUsedUp: string
+    /** Row note: past its included usage, this model bills top-up credits (pay as you go). */
+    /** "Weekly limit reached" from a limit name ("weekly"). */
+    limitReached: (name: string) => string
+    limitNames: { day: string; month: string; top_tier: string; week: string }
+    limitThenCredits: string
+    limitThenCreditsLarge: string
+    limitThenWait: string
+    limitThenWaitLarge: string
+    percentUsed: (percent: string) => string
+    resetsIn: (duration: string) => string
+    /** Window plans: the gateway's per-model word (free / low / medium / top_tier). */
+    usageLevels: { free: string; top_tier: string }
+    sectionRecommended: string
+    sectionOther: string
+    largeFootnote: string
   }
 
   modelVisibility: {
@@ -4046,6 +4092,17 @@ export interface Translations extends NoticeTranslations {
       errorStartNewSession: string
       errorSwitchProvider: string
       errorChooseModel: string
+      /** usage_window: one click to the plan's recommended model; `note` is "free" / "included". */
+      errorSwitchToModel: (model: string, note: string) => string
+      errorSwitchModelFailed: string
+      /** usage_window: turn on Keep going on credits, then re-run the turn. */
+      errorUseCredits: string
+      errorUseCreditsFailed: string
+      /** usage_window with no balance: opens Settings → Billing to add credits. */
+      errorAddCredits: string
+      /** Error card button: opens Settings → Billing in-app (Keep going, buy credits). */
+      errorOpenBillingSettings: string
+      /** Error card body when a Nous account is out of credits (its button opens Settings → Billing). */
       errorCompressConversation: string
       errorCompressFailed: string
       errorOpenHermesFolder: string

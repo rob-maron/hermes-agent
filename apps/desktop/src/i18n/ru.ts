@@ -351,6 +351,36 @@ export const ruOverrides = {
     noResults: 'Языки не найдены'
   },
   settings: {
+    // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
+    billing: {
+      keepGoingOnCredits: {
+        title: 'Продолжать за кредиты',
+        description: 'Тратить кредиты, когда включённый объём закончится. Выключено: Hermes ждёт сброса.',
+        approveInBrowser:
+          'Чтобы изменить это, одобрите удалённые траты в браузере. Изменение применится сразу после одобрения.',
+        openAgain: 'Открыть снова',
+        cancel: 'Отмена',
+        approvedRetry: 'Удалённые траты одобрены, но изменение не сохранилось.',
+        tryAgain: 'Повторить'
+      },
+      state: {
+        usage: {
+          window: {
+            today: 'Сегодня',
+            week: 'Эта неделя',
+            month: 'Этот месяц',
+            topTier: 'Крупные модели (месяц)',
+            barLabel: title => `${title}: использовано включённого объёма`,
+            captionPaused: 'Приостановлено: платёж по подписке не прошёл',
+            captionTopTierUsedUp: 'Месячный лимит исчерпан, остальное оплачивается кредитами',
+            captionTopTierUsedUpKeepGoingOff: 'Месячный лимит исчерпан, другие включённые модели работают',
+            captionResetsIn: duration => `Сброс через ${duration}`,
+            captionIncluded: 'Включённый объём',
+            valueUsed: percent => `использовано ${percent}`
+          }
+        }
+      }
+    },
     subpages: {
       appearanceTheme: 'Тема',
       appearanceTypography: 'Шрифты и масштаб',
@@ -3234,7 +3264,31 @@ export const ruOverrides = {
     wasPrice: 'было',
     customModel: 'Своя модель',
     addCustomModelAction: 'Добавить свою модель…',
-    customModelPlaceholder: 'Введите id модели, например openai/gpt-5'
+    customModelPlaceholder: 'Введите id модели, например openai/gpt-5',
+    today: 'Сегодня',
+    week: 'Неделя',
+    month: 'Месяц',
+    topTier: 'Крупные модели (в месяц)',
+    included: 'Все модели ниже включены',
+    pausedRenewal: 'пауза: оплата не прошла',
+    includedUsedUp: 'Включённый объём исчерпан',
+    limitReached: name => `Достигнут ${name}`,
+    limitNames: {
+      day: 'дневной лимит',
+      month: 'месячный лимит',
+      top_tier: 'месячный лимит крупных моделей',
+      week: 'недельный лимит'
+    },
+    limitThenCredits: 'платные модели теперь используют ваши кредиты (оплата по факту)',
+    limitThenCreditsLarge: 'крупные модели теперь используют ваши кредиты (оплата по факту)',
+    limitThenWait: 'до сброса только бесплатные модели',
+    limitThenWaitLarge: 'крупные модели приостановлены до сброса',
+    percentUsed: percent => `${percent} использовано`,
+    resetsIn: duration => `сброс через ${duration}`,
+    usageLevels: { free: 'Бесплатно', top_tier: 'Крупная' },
+    sectionRecommended: 'Рекомендуемые',
+    sectionOther: 'Другие модели',
+    largeFootnote: 'Крупные модели также расходуют месячный лимит крупных моделей.'
   },
 
   modelVisibility: {
@@ -3632,6 +3686,19 @@ export const ruOverrides = {
   },
   assistant: {
     thread: {
+      errorCodes: {
+        usage_window: {
+          title: 'Включённый объём исчерпан',
+          body: 'Включённый объём вашего плана исчерпан до сброса. Пополните кредиты в /topup, чтобы продолжить.'
+        }
+      },
+      errorSwitchToModel: (model: string, note?: string) =>
+        note ? `Переключиться на ${model} (${note})` : `Переключиться на ${model}`,
+      errorSwitchModelFailed: 'Не удалось переключить модель',
+      errorUseCredits: 'Использовать кредиты',
+      errorUseCreditsFailed: 'Не удалось включить «Продолжать за кредиты»',
+      errorAddCredits: 'Пополнить кредиты',
+      errorOpenBillingSettings: 'Открыть настройки оплаты',
       loadingSession: 'Загрузка сеанса',
       showEarlier: 'Показать ранние сообщения',
       loadingResponse: 'Hermes загружает ответ',

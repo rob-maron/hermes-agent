@@ -54,12 +54,44 @@ def verify_home(home: Path, configured: str) -> None:
     raise ValueError("profile_mismatch")
 
 
+def _unwrap_launchd_osascript(argv: list[str]) -> list[str]:
+    """The installer's macOS Local Network wrapper (``gateway_launchd.launchd_program_arguments``):
+    ``/usr/bin/osascript -l JavaScript -e <JXA running "exec <command> >> <log> 2>> <log>">``.
+
+    Accepted only when re-rendering the extracted command reproduces ``argv`` exactly, so this
+    recognizes the installer's own template and nothing else (no extra shell syntax can ride along).
+    """
+    if argv[:4] != ["/usr/bin/osascript", "-l", "JavaScript", "-e"] or len(argv) != 5:
+        return argv
+    import json
+    from hermes_cli.gateway_launchd import launchd_program_arguments
+    match = re.fullmatch(r'ObjC\.import\("stdlib"\); const status=\$\.system\((".*")\); .*', argv[4], re.DOTALL)
+    if not match:
+        _unverified()
+    try:
+        tokens = shlex.split(json.loads(match[1]))
+    except ValueError:
+        _unverified()
+    if len(tokens) < 6 or tokens[0] != "exec" or tokens[-4] != ">>" or tokens[-2] != "2>>":
+        _unverified()
+    command = tokens[1:-4]
+    if launchd_program_arguments(command, Path(tokens[-3]), Path(tokens[-1])) != argv:
+        _unverified()
+    return command
+
+
 def verify_gateway_argv(argv: list[str], home: Path) -> None:
     from gateway.status import looks_like_gateway_command_line
 
+    argv = _unwrap_launchd_osascript(argv)
     # The installer wraps launchd stderr with this fixed, non-shell module.
     if len(argv) > 7 and argv[1:4] == ["-m", "hermes_cli.stderr_timestamp", "--error-log"] and argv[5] == "--":
         if not re.fullmatch(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?", Path(argv[0]).name.lower()):
+            _unverified()
+        argv = argv[6:]
+    # Same wrapper through the install's own launcher (``_launchers.installation_command``).
+    elif len(argv) > 7 and argv[1:4] == ["--run-module", "hermes_cli.stderr_timestamp", "--error-log"] and argv[5] == "--":
+        if Path(argv[0]).name.lower() not in {"hermes", "hermes.exe"}:
             _unverified()
         argv = argv[6:]
     if not argv or not looks_like_gateway_command_line(subprocess_command(argv)):

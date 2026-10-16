@@ -477,6 +477,16 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
         model_ids = restrict_to_nous_policy(model_ids, nous_policy_allowed_ids(), rescue_empty=True)
     except Exception:
         pass
+    try:
+        # Window plans: the plan's featured picks lead the list. Plan shape only (it rarely changes), so
+        # the last snapshot at any age answers — a long-running gateway's 60s cache has usually lapsed
+        # by the time someone opens /model.
+        from hermes_cli.model_picker_usage import featured_first, nous_picker_usage
+        usage = nous_picker_usage(any_age=True)
+        if usage is not None:
+            model_ids = featured_first(model_ids, usage.featured_model_ids)
+    except Exception:
+        pass
     return model_ids
 
 
@@ -1398,4 +1408,41 @@ def list_picker_providers(
     from hermes_cli.models_validate import drop_unofferable_model_ids
 
     drop_unofferable_model_ids(filtered)
+    _attach_window_model_notes(filtered)
     return filtered
+
+
+def _attach_window_model_notes(providers: List[dict]) -> None:
+    """Nous on a usage-window plan, for the messaging pickers (same words as the CLI/TUI/desktop pickers):
+    ``model_labels`` {id: "Large" | "Free"} (plan shape, any-age snapshot; other levels carry no tag), and
+    from a fresh snapshot only (a stale percent would mislabel it) ``plan_line`` (the limit line: "Weekly
+    limit reached · resets in 21h · paid models now use your credits (pay as you go)").
+    Every field is omitted when empty and for any account not on a window plan. Never raises."""
+    try:
+        nous = next((p for p in providers if str(p.get("slug", "")).lower() == "nous"), None)
+        if nous is None:
+            return
+        from hermes_cli.model_picker_usage import nous_picker_usage, usage_level_label, usage_levels
+        fresh = nous_picker_usage()
+        usage = fresh or nous_picker_usage(any_age=True)
+        if usage is None:
+            return
+        from agent.plan_limits import cached_pricing
+        base_url = str(nous.get("api_url") or "")
+        if not base_url:
+            # Cache-only: the env override, else the default URL; never a credential refresh here.
+            from hermes_cli.auth import _nous_inference_env_override
+            from hermes_cli.auth_constants import DEFAULT_NOUS_INFERENCE_URL
+            base_url = _nous_inference_env_override() or DEFAULT_NOUS_INFERENCE_URL
+        pricing = cached_pricing(base_url)
+        models = [str(m) for m in nous.get("models", [])]
+        labels = {m: label for m, lv in usage_levels(models, pricing).items() if (label := usage_level_label(lv))}
+        if labels:
+            nous["model_labels"] = labels
+        if fresh is None:
+            return
+        line = usage.limit_line()
+        if line:
+            nous["plan_line"] = line
+    except Exception:
+        logger.debug("window model notes failed", exc_info=True)

@@ -38,7 +38,7 @@ const usd = (amount: string) => `$${amount}`
 
 /**
  * The /billing modal.  A self-contained state machine:
- *   overview → buy | autoreload | limit  (and buy → confirm).
+ *   overview → buy | autoreload | limit | hermes  (and buy → confirm).
  * Esc from a sub-screen returns to overview; Esc from overview closes.
  * All RPCs + error mapping live in billing.ts and are reached through
  * `overlay.ctx` — this component only renders + routes keys.
@@ -64,6 +64,7 @@ export function BillingOverlay({ onClose, onPatch, overlay, t }: BillingOverlayP
       )}
       {screen === 'autoreload' && <AutoReloadScreen ctx={ctx} onClose={onClose} onPatch={onPatch} s={s} t={t} />}
       {screen === 'limit' && <LimitScreen ctx={ctx} onClose={onClose} onPatch={onPatch} s={s} t={t} />}
+      {screen === 'hermes' && <KeepGoingOnCreditsScreen ctx={ctx} onClose={onClose} onPatch={onPatch} s={s} t={t} />}
       {screen === 'stepup' && (
         <StepUpScreen
           amount={overlay.pendingCharge?.amount ?? ''}
@@ -108,40 +109,57 @@ function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   // auto-reload, a limit). The card only matters at CHARGE time: with no card
   // on file, "Add funds" opens the guided add-card path (portal + check-again)
   // instead of an amount picker that would 403 no_payment_method.
+  // Window plans: turning it on spends money later, so it confirms first (like
+  // the terminal /topup); turning it off happens at once.
+  const hermesRow =
+    s.keep_going_on_credits == null ? null : s.keep_going_on_credits ? B.keepGoing.rowTurnOff : B.keepGoing.rowTurnOn
+
+  // Turning it off only stops spending, so an admin keeps that one row with
+  // Remote Spending off (the portal and the server allow it too).
+  const offOnly = !full && s.is_admin && s.keep_going_on_credits === true
+
   const items = full
-    ? [B.overview.addFunds, B.overview.autoReload, B.overview.monthlyLimit, B.common.manageOnPortal, B.common.cancel]
-    : [B.common.manageOnPortal, B.common.cancel]
+    ? [
+        B.overview.addFunds,
+        B.overview.autoReload,
+        ...(hermesRow ? [hermesRow] : []),
+        B.overview.monthlyLimit,
+        B.common.manageOnPortal,
+        B.common.cancel
+      ]
+    : [...(offOnly && hermesRow ? [hermesRow] : []), B.common.manageOnPortal, B.common.cancel]
 
   const choose = (i: number) => {
-    if (full) {
-      if (i === 0) {
-        onPatch({ screen: 'buy' })
-      } else if (i === 1) {
-        onPatch({ screen: 'autoreload' })
-      } else if (i === 2) {
-        onPatch({ screen: 'limit' })
-      } else {
-        if (i === 3 && s.portal_url) {
-          ctx.openPortal(s.portal_url)
-        }
+    const label = items[i]
 
+    if (full && label === B.overview.addFunds) {
+      onPatch({ screen: 'buy' })
+    } else if (full && label === B.overview.autoReload) {
+      onPatch({ screen: 'autoreload' })
+    } else if (full && label === B.overview.monthlyLimit) {
+      onPatch({ screen: 'limit' })
+    } else if ((full || offOnly) && label === hermesRow) {
+      if (s.keep_going_on_credits) {
+        applyKeepGoingOnCredits(ctx, B, false)
         onClose()
+      } else {
+        onPatch({ screen: 'hermes' })
+      }
+    } else {
+      if (label === B.common.manageOnPortal && s.portal_url) {
+        ctx.openPortal(s.portal_url)
       }
 
-      return
+      onClose()
     }
-
-    if (i === 0 && s.portal_url) {
-      ctx.openPortal(s.portal_url)
-    }
-
-    onClose()
   }
 
   const rows: MenuRowSpec[] = items.map((label, i) => ({ label, run: () => choose(i) }))
   const sel = useMenu(rows, onClose)
 
   const auto = autoReloadLine(B, s)
+  const hermesLine =
+    s.keep_going_on_credits == null ? null : s.keep_going_on_credits ? B.keepGoing.onLine : B.keepGoing.offLine
   // Balance leads, in the title — the first thing seen (review feedback).
   const title = B.overview.title(s.balance_display)
 
@@ -160,6 +178,7 @@ function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
           /subscription. Renders nothing when no usage model is available. */}
       <UsageBars model={s.usage} t={t} />
       {auto && <Text color={t.color.muted}>{auto}</Text>}
+      {hermesLine && <Text color={t.color.muted}>{hermesLine}</Text>}
       {/* Card presence at a glance: which card a charge would use (with why —
           "the card on your subscription"), or that none is saved. Only for the
           full menu — members/billing-off get the portal note instead. */}
@@ -951,6 +970,51 @@ function LimitScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
       ))}
       <Text />
       {footer(B.limit.hint(labels.length), t)}
+    </Box>
+  )
+}
+
+/** Flip the account setting; the ✅ line lands once the gateway confirms (errors render there). */
+function applyKeepGoingOnCredits(ctx: BillingOverlayState['ctx'], B: Translations['billing'], enabled: boolean) {
+  void ctx.applyKeepGoingOnCredits(enabled).then(ok => {
+    if (ok) {
+      ctx.sys(enabled ? B.keepGoing.turnedOn : B.keepGoing.turnedOff)
+    }
+  })
+}
+
+// ── Screen: confirm turning on Keep going on credits (same words as the terminal /topup) ──
+
+function KeepGoingOnCreditsScreen({ ctx, onClose, onPatch, t }: ScreenProps) {
+  const B = useT().billing
+  const labels = [B.keepGoing.turnOn, B.common.cancel]
+  const back = () => onPatch({ screen: 'overview' })
+
+  const choose = (i: number) => {
+    if (i !== 0) {
+      return back()
+    }
+
+    applyKeepGoingOnCredits(ctx, B, true)
+    onClose()
+  }
+
+  const rows: MenuRowSpec[] = labels.map((label, i) => ({ label, run: () => choose(i) }))
+  const sel = useMenu(rows, back)
+
+  return (
+    <Box flexDirection="column">
+      <Text bold color={t.color.accent}>
+        {B.keepGoing.title}
+      </Text>
+      <Text color={t.color.text}>{B.keepGoing.body}</Text>
+      <Text color={t.color.muted}>{B.keepGoing.offNote}</Text>
+      <Text />
+      {labels.map((label, i) => (
+        <MenuRow active={sel === i} index={i + 1} key={label} label={label} t={t} />
+      ))}
+      <Text />
+      {footer(B.buy.hint(labels.length), t)}
     </Box>
   )
 }

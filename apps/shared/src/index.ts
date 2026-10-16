@@ -100,6 +100,18 @@ export {
 } from './json-rpc-gateway'
 export { modelSearchText } from './model-search-text'
 export {
+  gaugeScope,
+  gaugeTitle,
+  hasTopTier,
+  planBlocks,
+  planLimit,
+  sectionAt,
+  splitRecommended,
+  type UsageLevel,
+  usageLevel,
+  usageTag
+} from './plan-usage'
+export {
   DEFAULT_REASONING_EFFORT,
   isReasoningEffort,
   REASONING_EFFORT_VALUES,

@@ -289,6 +289,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from gateway.warning_notifications import is_diagnostic_notice, render_notification
         if self._ctx.mute_notification_reply or not self._status_live():
             return
+        # A usage-window limit line repeats the turn's own reply, which carries the sentence and the
+        # switch button (a chat message cannot be cleared, so it would only pile up). The 90% heads-up
+        # is a desktop / terminal nudge; in a chat it is noise (/usage has the numbers).
+        key = str(getattr(notice, "key", "") or "")
+        if key == "credits.window_limit" or key.startswith("credits.window."):
+            return
         diagnostic = is_diagnostic_notice(notice)
         def present():
             try:
@@ -1299,6 +1305,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         common = {
             "messages": result.get("messages", []), "api_calls": result.get("api_calls", 0),
             "failed": result.get("failed", False), "failure_reason": result.get("failure_reason"),
+            # Usage-window limit (agent/plan_limits.py): the gateway offers the plan's model as a button.
+            "usage_limit": result.get("usage_limit"),
             "partial": result.get("partial", False), "completed": result.get("completed"),
             "interrupted": result.get("interrupted", False), "interrupt_message": result.get("interrupt_message"),
             "error": result.get("error"),

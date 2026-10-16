@@ -317,6 +317,31 @@ def test_gateway_wrapper_requires_actual_python_entrypoint(outer, tmp_path):
         verify_gateway_argv(argv, tmp_path)
 
 
+def test_installer_osascript_launchd_wrapper_is_recognized(tmp_path):
+    """macOS installs wrap the gateway in /usr/bin/osascript for Local Network access
+    (gateway_launchd.launchd_program_arguments); the identity check must see through its own
+    template — and only its own template."""
+    from hermes_cli.gateway_launchd import launchd_program_arguments
+    from hermes_cli.gateway_runtime_service_identity import verify_gateway_argv
+    launcher = str(tmp_path / ".hermes" / "bin" / "hermes")
+    inner = [launcher, "--run-module", "hermes_cli.stderr_timestamp", "--error-log", str(tmp_path / "e.log"), "--",
+             launcher, "gateway", "run", "--external-supervisor"]
+    out, err = tmp_path / "gateway.log", tmp_path / "gateway.error.log"
+    verify_gateway_argv(launchd_program_arguments(inner, out, err), tmp_path)
+
+    for bad in (launchd_program_arguments(["/bin/echo", "gateway", "run"], out, err),
+                launchd_program_arguments([*inner, "--extra"], out, err),
+                ["/usr/bin/osascript", "-l", "JavaScript", "-e", "garbage"]):
+        with pytest.raises(ValueError, match="service_identity_unverified"):
+            verify_gateway_argv(bad, tmp_path)
+    tampered = launchd_program_arguments(inner, out, err)
+    tampered[4] = tampered[4].replace("2>> ", "2>> /dev/null; touch /tmp/x; echo ")
+    with pytest.raises(ValueError, match="service_identity_unverified"):
+        verify_gateway_argv(tampered, tmp_path)
+    with pytest.raises(ValueError, match="service_identity_unverified"):
+        verify_gateway_argv(["/bin/sh", *inner[1:]], tmp_path)
+
+
 def test_android_python_reaches_the_unmanaged_start(tmp_path, monkeypatch):
     """Termux is supported and has no service manager; Python 3.13+ there reports
     sys.platform == "android". Ensure must start the gateway unmanaged, not refuse the platform."""

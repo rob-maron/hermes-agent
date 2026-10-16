@@ -202,6 +202,14 @@ Manage your plan, view usage, or upgrade/cancel at any time:
 - **Web:** [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription)
 - **CLI shortcut:** `hermes portal open` (opens the same page in your default browser)
 
+### Plans with included usage
+
+Some Nous plans include Hermes usage instead of a monthly credit grant. Usage refills daily, weekly and monthly, and large models have their own monthly limit. See how much is used in the model picker (`/model`), with `/usage`, or in the desktop app under **Settings → Billing**.
+
+On these plans the picker lists your plan's **Recommended** models first and tags **Large** models (they also count toward a monthly large-model limit) and **Free** models (they never count toward a limit). When a limit is reached, the picker says so once at the top and dims the models it pauses until it refills; Free models keep working. Turn on **Keep going on credits** (in `/topup`, the desktop app's Billing settings, or the Portal) to keep using paid models on your top-up credits instead.
+
+See the [subscription page](https://portal.nousresearch.com/manage-subscription) for plans and limits.
+
 ## Configuration reference
 
 After `hermes setup --portal`, `~/.hermes/config.yaml` will look like:

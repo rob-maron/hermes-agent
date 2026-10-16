@@ -1452,9 +1452,15 @@ def _(rid, params: dict, session: dict) -> dict:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
     # Nous credits are agent-independent (portal fetch); fail-open when absent.
     with contextlib.suppress(Exception):
-        from agent.account_usage import nous_credits_lines
-        if credits := nous_credits_lines():
+        from agent.account_usage import nous_credits_view
+        agent = session.get("agent")
+        credits, is_window = nous_credits_view(
+            credits_state=getattr(agent, "_credits_state", None) if agent else None,
+        )
+        if credits:
             usage["credits_lines"] = credits
+            if is_window:
+                usage["credits_usage_window"] = True
     # Provider account limits (e.g. Codex quota windows) — the same block the CLI and gateway /usage
     # render, so the Desktop usage feed is not the one surface that omits them. Fail-open.
     with contextlib.suppress(Exception):
@@ -1931,6 +1937,14 @@ def _auto_reload(nb, p: dict, _key) -> dict:
 
 _billing_route("billing.auto_reload", _auto_reload, message="threshold and top_up_amount are required",
                invalid=lambda p: p.get("threshold") is None or p.get("top_up_amount") is None)
+# PATCH /api/billing/keep-going-on-credits (window plans). `invalid` below guarantees a bool.
+def _keep_going_on_credits(nb, p: dict, _key) -> dict:
+    nb.patch_keep_going_on_credits(enabled=p["enabled"])
+    return {"ok": True}
+
+
+_billing_route("billing.keep_going_on_credits", _keep_going_on_credits,
+               invalid=lambda p: not isinstance(p.get("enabled"), bool), message="enabled (bool) is required")
 
 
 @method("billing.step_up")

@@ -96,6 +96,10 @@ export const zhHantAssistant = {
         ssl_cert_verification: {
           title: '安全連線失敗',
           body: provider => `Hermes 無法驗證與 ${provider} 的安全連線。請檢查網路或代理設定，或切換服務商後重新傳送。`
+        },
+        usage_window: {
+          title: '包含用量已用完',
+          body: '你的方案包含的用量已用完，將在重設後恢復。在 /topup 中新增額度即可繼續。'
         }
       },
       errorLayers: {
@@ -110,6 +114,12 @@ export const zhHantAssistant = {
         streaming: '串流連線錯誤'
       },
       errorRetry: '重試',
+      errorSwitchToModel: (model, note) => (note ? `切換到 ${model}（${note}）` : `切換到 ${model}`),
+      errorSwitchModelFailed: '無法切換模型',
+      errorUseCredits: '使用額度',
+      errorUseCreditsFailed: '無法開啟用額度繼續',
+      errorAddCredits: '新增額度',
+      errorOpenBillingSettings: '開啟帳單設定',
       errorLimitResets: time => `限額將於 ${time} 重設`,
       errorRetryAtReset: time => `限額重設後重試（${time}）`,
       errorRetryScheduled: (time, wait) => `將於 ${time} 重試 — 還剩 ${wait}`,

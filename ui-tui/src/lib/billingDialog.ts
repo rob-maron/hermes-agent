@@ -1,4 +1,5 @@
 import type { BillingBlock } from '@hermes/shared/billing'
+import type { UsageLimit } from '@hermes/shared/plan-usage'
 
 import { t } from '../i18n/runtime.js'
 
@@ -36,5 +37,48 @@ export function billingDialogCopy(block: BillingBlock): BillingDialogCopy {
       : t('libText.billingDialog.switchProvider'),
     detail: t('libText.billingDialog.providerDetail', label),
     title: t('libText.billingDialog.providerTitle', label)
+  }
+}
+
+export interface UsageLimitDialog extends BillingDialogCopy {
+  /** `config.set model` value for the switch (this session only), or null: open /topup instead. */
+  switchValue: null | string
+}
+
+/**
+ * A usage-window plan's limit (error_surface.usage_limit, agent/plan_limits.py): the confirm button
+ * switches THIS session to the plan's recommended model and re-sends the message; the detail names the
+ * other way on (credits, via /topup). With no model to offer, the confirm opens /topup instead. Never
+ * switches on its own: the dialog is the ask.
+ */
+export function usageLimitDialog(limit: UsageLimit): UsageLimitDialog {
+  const suggestion = limit.suggestions?.[0]
+  const sentence = (limit.message || '').trim()
+
+  const credits =
+    limit.credits?.action === 'use_credits'
+      ? 'Or turn on Keep going in /topup to use your credits.'
+      : limit.credits?.action === 'add_credits'
+        ? 'Or add credits with /topup.'
+        : ''
+
+  if (!suggestion) {
+    return {
+      cancelLabel: 'Dismiss',
+      confirmLabel: 'Open /topup',
+      switchValue: null,
+      detail: [sentence, credits].filter(Boolean).join('\n'),
+      title: 'Limit reached'
+    }
+  }
+
+  const note = suggestion.note ? ` (${suggestion.note})` : ''
+
+  return {
+    cancelLabel: 'Dismiss',
+    confirmLabel: `Switch to ${suggestion.label}${note}`,
+    detail: [sentence, credits].filter(Boolean).join('\n'),
+    switchValue: `${suggestion.model} --provider ${suggestion.provider || 'nous'} --session`,
+    title: 'Limit reached'
   }
 }

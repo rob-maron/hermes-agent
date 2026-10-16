@@ -156,7 +156,18 @@ def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
     rows += [("Messages:", f"{message_count:,}"), ("Compressions:", n("compressions"))]
     model = usage.get("model") or _metadata_mirror(session).get("model") or getattr(agent, "model", "") or "(unknown)"
     lines = ["Session Token Usage", "────────────────────────────────────────", f"Model: {model}"]
-    return "\n".join(lines + [f"{label:<30}{value}" for label, value in rows])
+    lines += [f"{label:<30}{value}" for label, value in rows]
+    # Usage-window plan block — the same lines the TUI /usage shows. Desktop reaches /usage through
+    # slash.exec, so without this the plan never appears there. Window plans only; fail-open. Only a
+    # session whose credits headers already say usage-window pays the portal round trip.
+    with contextlib.suppress(Exception):
+        state = getattr(agent, "_credits_state", None)
+        if state is not None and state.is_usage_window:
+            from agent.account_usage import nous_credits_view
+            credits, is_window = nous_credits_view(credits_state=state)
+            if credits and is_window:
+                lines += ["", "Nous Plan", "────────────────────────────────────────", *credits]
+    return "\n".join(lines)
 
 
 def _live_session_messages(session: dict) -> Optional[list]:

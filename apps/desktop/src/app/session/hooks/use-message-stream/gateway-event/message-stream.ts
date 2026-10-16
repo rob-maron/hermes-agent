@@ -393,8 +393,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     }
 
     // Structured billing wall forwarded by the gateway (out of credits /
-    // payment required) — cache it + raise a billing-specific toast.
-    if (payload?.billing) {
+    // payment required) — cache it + raise a billing-specific toast. A window
+    // plan's limit is said once, by the turn's error card (its buttons are the
+    // ways on); a toast and banner would only repeat it.
+    const usageWindowWall = parseErrorSurface(payload?.error_surface)?.code === 'usage_window'
+
+    if (payload?.billing && !usageWindowWall) {
       surfaceBillingBlock(sessionId, payload.billing)
     }
 
