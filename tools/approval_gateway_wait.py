@@ -188,6 +188,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         "pattern_keys": list(approval_data.get("pattern_keys", [primary_key])),
         "session_key": session_key, "surface": surface,
     }
+    # A consent a client draws as its own card (an artifact upload): its title, kind and facts, when set.
+    payload.update({k: approval_data[k] for k in ("title", "kind") if isinstance(approval_data.get(k), str)})
+    if isinstance(approval_data.get("summary"), dict):
+        payload["summary"] = approval_data["summary"]
     from tools.approval_notify_lease import current
     owner = current(session_key)
     keys = list(approval_data.get("pattern_keys") or [])

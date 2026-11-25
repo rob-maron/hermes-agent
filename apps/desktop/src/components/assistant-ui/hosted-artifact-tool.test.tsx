@@ -288,3 +288,39 @@ describe('transcript routing', () => {
     expect(isCardTool('mcp__hermes_artifacts__artifact_list')).toBe(false)
   })
 })
+
+describe('hosted artifact sharing on the card', () => {
+  const shareLink = (container: HTMLElement) =>
+    container.querySelector<HTMLAnchorElement>('[data-slot="aui_hosted-artifact-share"]')
+
+  it('offers Share for an artifact the agent created or updated, opening the Share panel', async () => {
+    const { container } = mount()
+
+    fireEvent.click(shareLink(container)!)
+
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(screen.getByText('Share “Artifact”')).toBeTruthy()
+  })
+
+  it("offers no Share on an artifact the agent only showed (it may be someone else's)", () => {
+    const { container } = mount({ toolName: 'mcp__hermes_artifacts__artifact_show' })
+
+    expect(shareLink(container)).toBeNull()
+  })
+
+  it('a pending upload offers a sandboxed local preview of the page it would send', () => {
+    const { container } = mount({
+      args: { files: [{ content: '<h1>Draft</h1>', encoding: 'utf8', path: 'index.html' }], title: 'Chart' },
+      result: undefined
+    })
+
+    expect(screen.getByTestId('fallback')).toBeTruthy()
+    expect(frame(container)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Preview what will be uploaded' }))
+
+    const iframe = frame(container)
+
+    expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(iframe?.getAttribute('srcdoc')).toBe('<h1>Draft</h1>')
+  })
+})

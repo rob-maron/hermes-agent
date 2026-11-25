@@ -2746,12 +2746,14 @@ export interface Translations extends NoticeTranslations {
     tabImages: string
     tabFiles: string
     tabLinks: string
+    tabPages: string
     noArtifactsTitle: string
     noArtifactsDesc: string
     failedLoad: string
     openFailed: string
     itemsImage: string
     itemsLink: string
+    itemsPage: string
     itemsFile: string
     itemsGeneric: string
     zero: string
@@ -2761,6 +2763,7 @@ export interface Translations extends NoticeTranslations {
     colTitleFile: string
     colTitleDefault: string
     colLocationLink: string
+    colLocationPage: string
     colLocationFile: string
     colLocationDefault: string
     colSession: string

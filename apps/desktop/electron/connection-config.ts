@@ -718,7 +718,13 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'GET /api/webapp-access/status',
   'POST /api/webapp-access/start',
   'POST /api/webapp-access/stop',
-  'POST /api/webapp-access/restart'
+  'POST /api/webapp-access/restart',
+  // Hosted artifacts Publish and sharing status: each handler takes `?profile=` and calls the hosted
+  // artifacts MCP server that profile's agent uses, which lives in the primary backend.
+  'GET /api/hosted-artifacts/status',
+  'POST /api/hosted-artifacts/publish',
+  'GET /api/hosted-artifacts/sharing',
+  'POST /api/hosted-artifacts/share'
 ])
 
 function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {

@@ -90,26 +90,44 @@ def test_valid_base64_is_accepted(store):
     assert "id" in store.create("t", [{"path": "a.png", "content": content, "encoding": "base64"}])
 
 
-@pytest.mark.parametrize("scope, subjects, pin", [
-    ("EVERYONE", None, None),
-    ("ORG", ["user-1"], None),
-    ("CREATOR_ONLY", ["user-1"], None),
-    ("MEMBERS", [""], None),
-    ("MEMBERS", ["u" * (fake.MAX_SUBJECT_CHARS + 1)], None),
-    ("MEMBERS", ["u"] * (fake.MAX_SUBJECTS + 1), None),
-    ("ORG", None, 9),
-    ("ORG", None, "head"),
+@pytest.mark.parametrize("changes", [
+    {"org": "yes"},
+    {"members": [""]},
+    {"members": ["u" * (fake.MAX_SUBJECT_CHARS + 1)]},
+    {"groups": ["g"] * (fake.MAX_SUBJECTS + 1)},
+    {"emails": ["not-an-email"]},
+    {"emails": ["a@example.net,c@example.org"]},
+    {"emails": [f"p{i}@example.org" for i in range(fake.MAX_INVITES + 1)]},
+    {"pin": 9},
+    {"pin": "head"},
 ])
-def test_share_scope_subjects_and_pin_are_checked(store, scope, subjects, pin):
+def test_share_lists_and_pin_are_checked(store, changes):
     store, artifact_id = store
-    assert _code(store.share(artifact_id, scope, subjects, pin)) == "invalid_request"
+    assert _code(store.share(artifact_id, **changes)) == "invalid_request"
 
 
-def test_a_valid_share_replaces_the_previous_one(store):
+def test_a_share_merges_into_the_access_list(store):
+    # Omitted fields keep their value, as on the hosted server.
     store, artifact_id = store
-    assert store.share(artifact_id, "MEMBERS", ["b", "a", "a"], 1) == {
-        "scope": "MEMBERS", "subjects": ["a", "b"], "pin": 1}
-    assert store.share(artifact_id, "ORG") == {"scope": "ORG", "subjects": [], "pin": "latest"}
+    assert store.share(artifact_id, members=["b", "a", "a"], pin=1) == {
+        "org": False, "members": ["b", "a"], "groups": [], "pin": 1, "invites": []}
+    assert store.share(artifact_id, org=True) == {
+        "org": True, "members": ["b", "a"], "groups": [], "pin": 1, "invites": []}
+    assert store.share(artifact_id, org=False, members=[]) == {
+        "org": False, "members": [], "groups": [], "pin": 1, "invites": []}
+
+
+def test_an_outside_email_is_handed_back_never_invited(store):
+    # The agent cannot invite someone outside the org: the result carries the link that opens the
+    # Portal's share sheet with the address filled in, for a person to confirm.
+    store, artifact_id = store
+    body = store.share(artifact_id, emails=[" Dana@Example.org "])
+    assert body["invites"] == [] and body["invites_need_confirmation"] == ["dana@example.org"]
+    assert body["invite_url"] == f"http://portal.localhost/a/{artifact_id}?share=1&invite=dana%40example.org"
+    store.invite(artifact_id, "dana@example.org")  # the person confirmed in the Portal
+    kept = store.share(artifact_id, emails=["dana@example.org"])
+    assert [i["email"] for i in kept["invites"]] == ["dana@example.org"] and "invite_url" not in kept
+    assert store.share(artifact_id, emails=[])["invites"] == []  # removing is always allowed
 
 
 def test_listing_is_paginated_newest_first():
@@ -144,7 +162,7 @@ def test_numbers_are_not_coerced_from_strings_or_booleans(store, tool, args):
     ("artifact_show", {"version": None}),
     ("artifact_list", {"cursor": None}),
     ("artifact_update", {"base_version": 2, "title": None, "files": HTML}),
-    ("artifact_share", {"scope": "ORG", "subjects": None}),
+    ("artifact_share", {"org": True, "members": None}),
 ])
 def test_null_for_an_optional_field_is_refused(store, tool, args):
     """The hosted server's input schemas are non-nullable: an explicit null is an error, not "absent"."""
@@ -157,3 +175,32 @@ def test_null_for_an_optional_field_is_refused(store, tool, args):
         asyncio.run(server.call_tool(tool, arguments))
     omitted = {key: value for key, value in arguments.items() if value is not None}
     assert not getattr(asyncio.run(server.call_tool(tool, omitted)), "is_error", True)
+
+
+def test_a_version_keeps_the_provenance_its_request_stated():
+    # Over the real wire: the client's tools/call _meta reaches the server's tool context.
+    from mcp.client.session import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    from tools.mcp_tool import sdk_httpx
+
+    base, stop, store = fake.serve_in_thread(token="t")
+    source = {"session_id": "s1", "cron_job_id": "j1", "cron_job_name": "Nightly"}
+
+    async def run():
+        httpx = sdk_httpx()
+        async with httpx.AsyncClient(headers={"Authorization": "Bearer t"}) as client, \
+                streamable_http_client(base + fake.MCP_PATH, http_client=client) as streams, \
+                ClientSession(*streams[:2]) as session:
+            await session.initialize()
+            created = await session.call_tool("artifact_create", {"title": "t", "files": HTML})
+            artifact_id = created.structured_content["id"]
+            await session.call_tool("artifact_update", {"id": artifact_id, "base_version": 1, "files": HTML},
+                                    meta={fake.HERMES_META_KEY: source})
+            return artifact_id
+
+    try:
+        artifact_id = asyncio.run(run())
+    finally:
+        stop()
+    assert store.sources(artifact_id) == [None, source]

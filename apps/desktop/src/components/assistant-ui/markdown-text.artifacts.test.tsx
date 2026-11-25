@@ -1,8 +1,10 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { resetHostedArtifactsStatus } from '@/lib/local-artifact-publish'
 import { artifactsForSession, clearArtifactRegistry } from '@/store/artifacts'
 import { $previewTabs } from '@/store/preview'
+import { $hostedByContent, $publishedArtifacts } from '@/store/published-artifacts'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import { MarkdownTextContent } from './markdown-text'
@@ -71,5 +73,46 @@ describe('MarkdownTextContent artifacts', () => {
     await screen.findByText('Pomodoro Timer')
 
     expect(artifactsForSession('session-artifacts')).toHaveLength(0)
+  })
+
+  describe('telling the user a page can be shared', () => {
+    function desktop(available: boolean) {
+      const api = vi.fn(async (request: { path: string }) =>
+        request.path === '/api/hosted-artifacts/status'
+          ? { available, reason: available ? 'attached' : 'not_logged_in' }
+          : undefined
+      )
+
+      window.hermesDesktop = { api, openExternal: vi.fn() } as never
+
+      return api
+    }
+
+    afterEach(() => {
+      resetHostedArtifactsStatus()
+      $publishedArtifacts.set({})
+      $hostedByContent.set({})
+      Reflect.deleteProperty(window, 'hermesDesktop')
+    })
+
+    it('puts Share on the card and says only the user can see the page', async () => {
+      desktop(true)
+      render(<MarkdownTextContent isRunning={false} text={fenced('html', HTML_DOC)} />)
+
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy()
+      expect(await screen.findByText(/Only you can see it/)).toBeTruthy()
+      // Opening the page stays the card's main action.
+      expect(screen.getByText('Pomodoro Timer').closest('button')?.dataset.slot).toBe('aui_artifact-card')
+    })
+
+    it('shows no Share when the account cannot save pages', async () => {
+      const api = desktop(false)
+      render(<MarkdownTextContent isRunning={false} text={fenced('html', HTML_DOC)} />)
+
+      await screen.findByText('Pomodoro Timer')
+      await waitFor(() => expect(api).toHaveBeenCalled())
+      expect(screen.queryByRole('button', { name: 'Share' })).toBeNull()
+      expect(screen.queryByText(/Only you can see it/)).toBeNull()
+    })
   })
 })

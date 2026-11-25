@@ -39,6 +39,7 @@ import { $showToolActivity } from '@/store/tool-activity'
 import { setToolDisclosureOpen } from '@/store/tool-view'
 
 import { isApprovalActivity } from './approval-activity'
+import { ApprovalDetails, approvalLabels } from './approval-labels'
 import { toolEntryDisclosureId } from './fallback-model/targets'
 import { isToolCallPart, summarizeToolRun } from './run-summary'
 
@@ -293,6 +294,8 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
   const showsDescription = !hasCommand || SYNTHETIC_COMMAND_RE.test(request.command.trim())
 
   const details = showsDescription ? request.description.trim() : request.command.trim()
+  // A hosted artifact upload reads as an upload, not a command (approval-labels).
+  const labels = approvalLabels(request, copy, t.hostedArtifact, showsDescription, details)
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
@@ -335,22 +338,18 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
       ref={cardRef}
     >
       <div className="flex items-center gap-2 px-2.5 pt-2 text-xs text-(--ui-text-secondary)">
-        <Codicon name="terminal" size="0.875rem" />
-        <span>{showsDescription ? copy.commandDetails : copy.command}</span>
+        <Codicon name={labels.icon} size="0.875rem" />
+        <span className={labels.headingClassName}>{labels.heading}</span>
         {total > 1 && (
           <span className="ml-auto text-[0.6875rem] tabular-nums text-(--ui-text-tertiary)">
             {position} / {total}
           </span>
         )}
       </div>
-      {details.length > 0 && (
-        <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">
-          {details}
-        </pre>
-      )}
+      {details.length > 0 && <ApprovalDetails plain={labels.plainDetails} text={labels.details} />}
       <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1" data-slot="tool-approval-actions">
         <Button data-approval-deny="" disabled={busy} onClick={() => void respond('deny')} size="sm" variant="text">
-          {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
+          {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : labels.reject}
         </Button>
         {hasMoreOptions && (
           <DropdownMenu>
@@ -383,7 +382,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
           </DropdownMenu>
         )}
         <Button data-approval-run="" disabled={busy} onClick={() => void respond('once')} size="sm">
-          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
+          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : labels.approve}
           <span className="opacity-60">↵</span>
         </Button>
       </div>
@@ -391,13 +390,13 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
       <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{copy.alwaysTitle}</DialogTitle>
-            <DialogDescription>{copy.alwaysDescription(request.description)}</DialogDescription>
+            <DialogTitle>{labels.alwaysTitle}</DialogTitle>
+            <DialogDescription>{labels.alwaysDescription}</DialogDescription>
           </DialogHeader>
 
-          {request.command.trim() && (
+          {labels.alwaysCommand && (
             <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-xs leading-snug text-foreground">
-              {request.command.trim()}
+              {labels.alwaysCommand}
             </pre>
           )}
 

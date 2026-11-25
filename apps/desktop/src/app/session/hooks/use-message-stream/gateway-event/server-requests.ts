@@ -404,11 +404,15 @@ const approval: Handler = ctx => {
       : undefined,
     command,
     description,
+    // A hosted artifact upload: drawn as an upload card, not a command.
+    kind: str(p.kind) || undefined,
     // The approval queue's own id — `approval.pending` / `approval.received` / `approval.respond` key on it.
     requestId: str(p.request_id) || undefined,
     serverRequestId: request.id,
     sessionId: sessionId || null,
-    smartDenied: p.smart_denied === true
+    smartDenied: p.smart_denied === true,
+    summary: p.summary,
+    title: str(p.title) || undefined
   }).catch(() => undefined)
   markNeedsInput(ctx)
 

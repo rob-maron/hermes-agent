@@ -13,6 +13,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
 import { ClarifyTool } from '@/components/assistant-ui/clarify'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
+import { HostedArtifactShareToolPart } from '@/components/assistant-ui/hosted-artifact-sharing'
 import { HostedArtifactToolPart } from '@/components/assistant-ui/hosted-artifact-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
@@ -31,7 +32,7 @@ import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/compon
 import { useI18n } from '@/i18n'
 import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
-import { isHostedArtifactCardTool } from '@/lib/hosted-artifacts'
+import { isHostedArtifactCardTool, isHostedArtifactShareTool } from '@/lib/hosted-artifacts'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
 import { type CardToolName, isCardTool, isCardToolName } from '@/lib/tool-render-class'
@@ -188,6 +189,11 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   // generic row.
   if (isHostedArtifactCardTool(props.toolName)) {
     return <HostedArtifactToolPart {...props} fallback={ToolFallback} />
+  }
+
+  // A share the agent asked for, which Hermes did not apply: the Share button for its share page.
+  if (isHostedArtifactShareTool(props.toolName)) {
+    return <HostedArtifactShareToolPart {...props} fallback={ToolFallback} />
   }
 
   // A reloaded transcript holds the model's own call: set_theme reached through the tool_call bridge.

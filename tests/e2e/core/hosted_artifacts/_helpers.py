@@ -188,8 +188,13 @@ def build_artifacts_home(root: Path, llm_base_url: str) -> E2EHome:
 
 
 def configure(eh: E2EHome, *, base_url: str, portal_url: str, token: str, **artifacts: Any) -> None:
-    """Sign *eh* in to Nous at *portal_url* and set ``artifacts`` (``base_url`` plus *artifacts*)."""
+    """Sign *eh* in to Nous at *portal_url* and set ``artifacts`` (``base_url`` plus *artifacts*).
+
+    Approvals are off (``approvals.mode: off``): every upload and widening share asks on a card, and a
+    one-shot ``chat -q`` turn has no one to answer it, so it would be refused. These flows test the
+    round trip to the hosted server; the cards are covered by tests/tools/test_hosted_artifacts_share_approval.py."""
     eh.update_config(lambda c: c.__setitem__("artifacts", {"base_url": base_url, **artifacts}))
+    eh.update_config(lambda c: c.setdefault("approvals", {}).__setitem__("mode", "off"))
     seed_nous_login(eh, portal_url, token)
 
 

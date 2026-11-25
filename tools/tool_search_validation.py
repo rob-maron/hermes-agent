@@ -113,6 +113,8 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         except Exception:
             logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
             candidate_args = dict(args)
+        from tools.hosted_artifacts import tool_call_arguments
+        candidate_args = tool_call_arguments(name, candidate_args)  # the nulls its handler leaves out
         try:
             from jsonschema.exceptions import best_match
             from jsonschema.validators import validator_for

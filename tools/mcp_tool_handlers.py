@@ -307,6 +307,104 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
                       f"'{server_name}'. The command was NOT run. Do not retry without explicit user direction.")
 
 
+def _read_artifact_sharing(artifact_id: str, timeout: float):
+    """Who can see *artifact_id*, read from the hosted server with a read-only ``artifact_get`` (no
+    card), or None when it could not be read. The answer carries the files too: this runs only before a
+    card or a share hand-off, never on every call."""
+    from tools.hosted_artifacts import SERVER_NAME, artifact_sharing
+    try:
+        raw = _make_tool_handler(SERVER_NAME, "artifact_get", timeout)({"id": artifact_id})
+    except Exception as exc:  # health: allow BLE001 -- an unreadable share only drops detail from the card
+        logger.warning("Hosted artifacts: could not read the sharing of %s: %s", artifact_id, exc)
+        return None
+    return artifact_sharing(raw)
+
+
+def _hand_share_to_user(request: Any, timeout: float) -> str:
+    """The answer to a share Hermes will not make (:func:`tools.hosted_artifacts.share_request`): the
+    user gets a Share button for the artifact, with any addresses filled in, and changes it there."""
+    from tools.hosted_artifacts import share_handoff
+    if request.artifact_id is None:
+        return tool_error("Who can see the artifact was NOT changed: Hermes could not tell which artifact this "
+                          "share was for. Call artifact_share again with its id.")
+    sharing = _read_artifact_sharing(request.artifact_id, timeout)
+    if sharing is None:
+        return tool_error("Who can see this artifact was NOT changed, and Hermes could not open its share page "
+                          "(the artifact could not be read). Tell the user they can share it from its page in "
+                          "the Nous Portal.")
+    logger.info("Hosted artifact share for %s handed to the user (%s)", request.artifact_id, ", ".join(request.adds))
+    return share_handoff(request.artifact_id, request, sharing)
+
+
+def _hosted_artifact_gate(server_name: str, tool_name: str, args: Any, timeout: float) -> Optional[str]:
+    """The hosted artifact calls that send content off the machine or hand it to other people, whatever
+    the server's trust tier (the managed server is fully trusted):
+
+    - A share that could add people or change the version they see is never sent for the agent: the
+      user gets a Share panel for the artifact and makes the change there. A share that can only take
+      access away goes through, and so does the user's own click (the Share panel, through the local
+      API) that only opens the artifact to their organisation; inviting specific people always goes
+      to the Portal's confirm step.
+    - An upload (a new artifact, or a new version) asks the user on a card first; a new version's card
+      says who will see it. A call the user started themself (the desktop's Publish button), a
+      remembered Session/Always answer, YOLO or ``approvals.mode: off`` skip the card, as for the trust
+      gate. An update's Session/Always answer covers that one page, whose audience its card showed:
+      another page may be shared with more people. A scheduled job or one-shot run, where no one can answer, refuses with how to allow it; a
+      failed prompt refuses.
+
+    Returns the answer to send back instead of the call, or None to go ahead."""
+    import re
+
+    from tools import hosted_artifacts as ha
+    request = ha.share_request(server_name, tool_name, args)
+    if request is not None:
+        if request.org_only and ha.is_user_initiated():
+            return None
+        return _hand_share_to_user(request, timeout)
+    if server_name != ha.SERVER_NAME or tool_name not in ha.UPLOAD_TOOLS:
+        return None
+    ident = args.get("id") if isinstance(args, dict) else None
+    known_page = isinstance(ident, str) and re.fullmatch(ha.ARTIFACT_ID_PATTERN, ident) is not None
+    # An update is remembered per page; one naming no valid page is asked about every time.
+    grant = f"{tool_name}/{ident}" if tool_name == "artifact_update" else tool_name
+    remember = tool_name != "artifact_update" or known_page
+    if ha.is_user_initiated() or _trust_granted(server_name, grant):
+        return None
+    from tools import approval_context as _ctx
+    scheduled = _ctx._is_cron_approval_context()
+    if scheduled or _ctx._is_single_query_approval_context():
+        logger.info("Hosted artifact call '%s' refused: no one can approve it in this %s", tool_name,
+                    "scheduled job" if scheduled else "run")
+        return tool_error(ha.unattended_upload_refusal(scheduled))
+    sharing = None
+    if tool_name == "artifact_update" and known_page:
+        sharing = _read_artifact_sharing(ident, timeout)
+    approval = ha.approval_for(server_name, tool_name, args, sharing=sharing)
+    if approval is None:
+        return None
+    message = approval.headline
+    if approval.details:
+        message += f"\n\nDetails:\n{_format_trust_gate_arguments(approval.details)}"
+    description = ("Approve once, for this session, or always, or deny to stop it. Nothing is sent "
+                   "until you approve.")
+    try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
+        from tools.approval_prompt import request_elicitation_consent
+        answer = request_elicitation_consent(message, description, surface=f"mcp-trust/{server_name}",
+                                            title=approval.title, kind=approval.kind,
+                                            summary=approval.summary,
+                                            remember_key=(_trust_approval_key(server_name, grant)
+                                                          if remember else None))
+    except Exception as exc:
+        logger.error("Hosted artifact approval failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
+        return tool_error(f"'{tool_name}' was NOT run: the approval system was unavailable (fail-closed).")
+    if answer == "accept":
+        logger.info("Hosted artifact call '%s' approved by the user on '%s'", tool_name, server_name)
+        return None
+    logger.info("Hosted artifact call '%s' %s by the user on '%s'", tool_name,
+                "cancelled" if answer == "cancel" else "denied", server_name)
+    return tool_error(approval.refusal)
+
+
 def _check_circuit_breaker(server_name: str) -> Optional[str]:
     """Open-breaker error, or None when calls may proceed. After the cooldown the breaker is
     half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown."""
@@ -603,7 +701,8 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str, *, retry_s
             inflight.discard(task)
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None):
+async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, progress_callback=None,
+                                        meta=None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -620,6 +719,8 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
     # A progress callback makes the SDK send ``_meta.progressToken``, the spec's opt-in for
     # ``notifications/progress``; without one the server must stay silent.
     extra = {"progress_callback": progress_callback} if progress_callback is not None else {}
+    if meta:
+        extra["meta"] = meta  # request ``_meta`` (the hosted artifacts server's provenance); the SDK keeps progressToken
     _call_coro = server.session.call_tool(tool_name, arguments=args, **extra)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
@@ -839,11 +940,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> Any:
-        from tools.hosted_artifacts import call_arguments
+        from tools.hosted_artifacts import call_arguments, call_meta
         args = call_arguments(server_name, args)  # the hosted artifacts server refuses nulls
+        meta = call_meta(server_name, tool_name)  # read here: the session/cron context is this thread's
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
         booked: list = []  # a costed call's charge; refunded when the call never reaches the server
         cached_read_only = _tool_is_read_only(server_name, tool_name)
+        # A hosted artifact upload or new version asks first, and a share that could add people is handed
+        # to the user as a Share button, before any charge is booked.
+        error = _hosted_artifact_gate(server_name, tool_name, args, tool_timeout)
+        if error is not None:
+            return error
         error = _trust_gate_check(server_name, tool_name, booked, args)
         if error is not None:
             return error
@@ -895,7 +1002,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
                 server._pending_call_callbacks = turn_callbacks
                 try:
                     result = await _call_tool_racing_stdio_death(
-                        server, server_name, tool_name, args, _on_progress if report is not None else None)
+                        server, server_name, tool_name, args, _on_progress if report is not None else None, meta)
                 finally:
                     server._pending_call_context = None
                     server._pending_call_callbacks = ()

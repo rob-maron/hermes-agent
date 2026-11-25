@@ -403,3 +403,88 @@ describe('PendingApprovalStack', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 })
+
+describe('PendingApprovalStack: hosted artifact uploads', () => {
+  const HEADLINE =
+    "Hermes made a page you can open from anywhere and share when you're ready. It's saved privately to your Nous account, so only you can see it until you share it. (1 file, 12 KB)"
+
+  function setUpload(kind: string, extra: { requestId?: string; serverRequestId?: string } = {}) {
+    $activeSessionId.set('sess-1')
+    setApprovalRequest({
+      command: HEADLINE,
+      description: 'Approve once, for this session, or always, or deny to stop it. Nothing is sent until you approve.',
+      kind,
+      sessionId: 'sess-1',
+      title: 'Save this as a page you can share?',
+      ...extra
+    })
+  }
+
+  it('draws an upload as an upload, not a command', () => {
+    setUpload('hosted_artifact_create')
+    const { container } = render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Save this as a page you can share?')).toBeTruthy()
+    expect(screen.queryByText('Command')).toBeNull()
+    expect(screen.getByRole('button', { name: /^Save page/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Not now' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Run/ })).toBeNull()
+    expect(container.querySelector('[data-slot="tool-approval-upload-details"]')?.textContent).toBe(HEADLINE)
+    expect(container.querySelector('[data-slot="tool-approval-card"] pre')).toBeNull()
+  })
+
+  it('a new version gets its own title', () => {
+    setUpload('hosted_artifact_update')
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Update this page?')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Update/ })).toBeTruthy()
+  })
+
+  it('Upload answers once', async () => {
+    mockGateway()
+    const respond = liveApproval()
+    setUpload('hosted_artifact_create', { requestId: 'apr-up', serverRequestId: 'srq-approval' })
+    render(<PendingApprovalStack />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save page/ }))
+
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ choice: 'once' }))
+  })
+
+  it('"Always allow" says what it lets the agent do, not a command pattern', async () => {
+    setUpload('hosted_artifact_update')
+    render(<PendingApprovalStack />)
+
+    fireEvent.keyDown(screen.getByRole('button', { name: /More approval options/ }), { key: 'Enter' })
+    fireEvent.keyDown(await screen.findByRole('menuitem', { name: /Always allow/ }), { key: 'Enter' })
+
+    expect(await screen.findByText('Always update pages without asking?')).toBeTruthy()
+    expect(screen.getByText(/won't ask again before updating one of your pages/)).toBeTruthy()
+    expect(screen.queryByText(/permanent allowlist/)).toBeNull()
+  })
+
+  it('says the upload in the user’s language from its facts, keeping the details block', () => {
+    $activeSessionId.set('sess-1')
+    setApprovalRequest({
+      command: `${HEADLINE}\n\nDetails:\ntitle: Q3 plan`,
+      description: 'Approve once',
+      kind: 'hosted_artifact_create',
+      sessionId: 'sess-1',
+      summary: { bytes: 12288, files: 1 }
+    })
+    const { container } = render(<PendingApprovalStack />)
+
+    expect(container.querySelector('[data-slot="tool-approval-upload-details"]')?.textContent).toBe(
+      `${HEADLINE}\n\ntitle: Q3 plan`
+    )
+  })
+
+  it('an unknown kind stays a command card', () => {
+    setUpload('something_else')
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Command')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
+  })
+})

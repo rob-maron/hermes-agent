@@ -1,7 +1,7 @@
 """A real ``hermes chat -q`` turn using the hosted artifacts MCP server end to end.
 
-The profile is signed in to Nous (temp ``HERMES_HOME``, fake Portal saying ``artifacts_access`` and
-``paid_access`` are true), so Hermes attaches ``hermes-artifacts`` at ``artifacts.base_url`` with the
+The profile is signed in to Nous (temp ``HERMES_HOME``, fake Portal saying ``artifacts_access`` is
+true), so Hermes attaches ``hermes-artifacts`` at ``artifacts.base_url`` with the
 Nous bearer. The scripted model then: creates an artifact; updates it from a stale base (version 0),
 which the server refuses with ``stale_base`` and the head version; retries from that head; and shows
 the result. Assertions read what the model saw and, against the in-repo fake, the server's inbound

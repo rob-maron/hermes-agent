@@ -1,10 +1,12 @@
+import { artifactContentHash, type ArtifactDetection, artifactSlug, detectArtifact } from '@/lib/artifact-detect'
 import { mediaTagValues } from '@/lib/chat-messages/parts'
+import { hostedArtifactLink, isHostedArtifactCardTool, parseHostedArtifactResult } from '@/lib/hosted-artifacts'
 import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
 
-export type ArtifactKind = 'image' | 'file' | 'link'
+export type ArtifactKind = 'image' | 'file' | 'link' | 'page'
 export type ArtifactFilter = 'all' | ArtifactKind
-export const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'image', 'file', 'link']
+export const ARTIFACT_FILTERS: readonly ArtifactFilter[] = ['all', 'page', 'image', 'file', 'link']
 
 export interface ArtifactRecord {
   id: string
@@ -16,6 +18,36 @@ export interface ArtifactRecord {
   profile?: string
   sessionTitle: string
   timestamp: number
+  /** A hosted artifact's own name, for its viewer link: known locally, so the page is never fetched for
+   *  a title (a fetch without the user's session reaches only a sign-in page). */
+  title?: string
+  /** The hosted artifact a viewer link points at, when this session's tools made or showed it. */
+  hostedId?: string
+  /** A page the agent wrote in a chat (an ```html block): what the chat's artifact card holds. */
+  page?: ArtifactPage
+}
+
+/** A page from a chat, as its artifact cards register it: every version, oldest first. */
+export interface ArtifactPage {
+  detection: ArtifactDetection
+  /** The chat's local artifact id (`<session>:<slug>`), the key its saved copy is recorded under. */
+  localId: string
+  /** Each distinct version's content and hash, oldest first (the registry's order and cap). A copy the
+   *  agent uploaded of any of them counts as the page's saved copy. */
+  versions: { content: string; hash: string }[]
+}
+
+/** The registry keeps this many versions of one artifact (store/artifacts MAX_VERSIONS_PER_ARTIFACT). */
+const PAGE_VERSIONS_KEPT = 20
+
+/** `later` appended to `earlier`, skipping versions already there (by hash), capped like the registry. */
+function mergePageVersions(
+  earlier: ArtifactPage['versions'],
+  later: ArtifactPage['versions']
+): ArtifactPage['versions'] {
+  const known = new Set(earlier.map(version => version.hash))
+
+  return [...earlier, ...later.filter(version => !known.has(version.hash))].slice(-PAGE_VERSIONS_KEPT)
 }
 
 export interface ArtifactLoadFailure {
@@ -494,13 +526,171 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
   }
 }
 
-export function collectArtifactsForSession(session: SessionInfo, messages: SessionMessage[]): ArtifactRecord[] {
+/** A hosted artifact a session's tools made, updated or showed: its title and its viewer page. */
+export interface KnownHostedArtifact {
+  title: string
+  viewerUrl: string
+}
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+
+const asObject = (value: unknown): Record<string, unknown> | null =>
+  asRecord(typeof value === 'string' ? parseMaybeJson(value) : value)
+
+/**
+ * The arguments of each tool call an assistant row made, by call id and tool name. A call made through
+ * the Tool Search bridge (`tool_call`, `{calls: [{name, arguments}]}`) answers in one tool row named
+ * after the inner tool, so its inner calls are filed under the bridge call's id too.
+ */
+function recordToolCalls(message: SessionMessage, calls: Map<string, Record<string, unknown>>): void {
+  if (message.role !== 'assistant' || !Array.isArray(message.tool_calls)) {
+    return
+  }
+
+  for (const call of message.tool_calls) {
+    const entry = asRecord(call)
+    const fn = asRecord(entry?.function)
+    const id = typeof entry?.id === 'string' ? entry.id : typeof entry?.call_id === 'string' ? entry.call_id : ''
+    const name = typeof fn?.name === 'string' ? fn.name.trim().toLowerCase() : ''
+    const args = asObject(fn?.arguments)
+
+    if (!id || !name || !args) {
+      continue
+    }
+
+    calls.set(`${id}:${name}`, args)
+
+    for (const inner of Array.isArray(args.calls) ? args.calls : []) {
+      const innerCall = asRecord(inner)
+      const innerName = typeof innerCall?.name === 'string' ? innerCall.name.trim().toLowerCase() : ''
+      const innerArgs = asObject(innerCall?.arguments)
+
+      if (innerName && innerArgs && !calls.has(`${id}:${innerName}`)) {
+        calls.set(`${id}:${innerName}`, innerArgs)
+      }
+    }
+  }
+}
+
+/** A hosted artifact a tool made, updated or showed (title from the result, else the call). */
+function hostedArtifactNamed(
+  message: SessionMessage,
+  calls: Map<string, Record<string, unknown>>
+): ({ id: string } & KnownHostedArtifact) | null {
+  const name = toolName(message)
+
+  if (message.role !== 'tool' || !isHostedArtifactCardTool(name)) {
+    return null
+  }
+
+  const text = messageText(message)
+
+  const result = [...(text ? parseToolPayloads(text) : []), message.content]
+    .map(payload => parseHostedArtifactResult(payload))
+    .find(Boolean)
+
+  if (!result) {
+    return null
+  }
+
+  const args = asObject(message.args) ?? (message.tool_call_id ? calls.get(`${message.tool_call_id}:${name}`) : null)
+  const called = args?.title
+  const title = result.title || (typeof called === 'string' ? called.trim() : '')
+
+  return { id: result.id, title, viewerUrl: result.viewerUrl }
+}
+
+// A fenced block in a reply: its info string and body.
+const FENCE_RE = /^```([^\n`]*)\n([\s\S]*?)\n?```/gm
+
+/** The pages (```html documents the chat shows as artifact cards) an assistant reply holds. */
+function pagesInReply(text: string): { content: string; detection: ArtifactDetection }[] {
+  const pages: { content: string; detection: ArtifactDetection }[] = []
+
+  for (const match of text.matchAll(FENCE_RE)) {
+    const language = (match[1] ?? '').trim().split(/\s+/)[0] ?? ''
+    const content = (match[2] ?? '').trim()
+    const detection = content ? detectArtifact(language, content) : null
+
+    if (detection?.kind === 'html') {
+      pages.push({ content, detection })
+    }
+  }
+
+  return pages
+}
+
+/** One row per page of a chat (its card's identity): a later version replaces the content it shows. */
+function addPage(
+  found: Map<string, ArtifactRecord>,
+  session: SessionInfo,
+  sessionTitle: string,
+  timestamp: number,
+  page: { content: string; detection: ArtifactDetection }
+): void {
+  const localId = `${session.id}:${artifactSlug(page.detection)}`
+  const key = `${session.id}:page:${localId}`
+  const existing = found.get(key)
+
+  const versions = mergePageVersions(existing?.page?.versions ?? [], [
+    { content: page.content, hash: artifactContentHash(page.content) }
+  ])
+
+  const title = page.detection.title || existing?.label || ''
+
+  found.set(key, {
+    id: key,
+    kind: 'page',
+    value: title,
+    href: '',
+    label: title,
+    sessionId: session.id,
+    profile: session.profile,
+    sessionTitle,
+    timestamp,
+    page: { detection: page.detection, localId, versions }
+  })
+}
+
+/**
+ * `hosted` carries the session's hosted artifacts across its transcript pages: a viewer link to one of
+ * them becomes one row with the artifact's name and its exact viewer URL (a link scanned out of a tool
+ * result's escaped JSON can carry stray characters). A content ticket link (short-lived) is
+ * left out: the viewer link is the one that keeps working.
+ */
+export function collectArtifactsForSession(
+  session: SessionInfo,
+  messages: SessionMessage[],
+  hosted: Map<string, KnownHostedArtifact> = new Map(),
+  calls: Map<string, Record<string, unknown>> = new Map()
+): ArtifactRecord[] {
   const found = new Map<string, ArtifactRecord>()
   const title = artifactSessionTitle(session)
 
   for (const message of messages) {
     if (message.role !== 'assistant' && message.role !== 'tool') {
       continue
+    }
+
+    recordToolCalls(message, calls)
+
+    if (message.role === 'assistant') {
+      const text = messageText(message)
+
+      for (const page of text ? pagesInReply(text) : []) {
+        addPage(found, session, title, artifactTimestamp(message, session), page)
+      }
+    }
+
+    const named = hostedArtifactNamed(message, calls)
+
+    if (named) {
+      // An update without a title keeps the name the artifact already had.
+      hosted.set(named.id, {
+        title: named.title || hosted.get(named.id)?.title || '',
+        viewerUrl: named.viewerUrl
+      })
     }
 
     collectArtifactsFromMessage(message, (candidate, explicit = false) => {
@@ -510,27 +700,51 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         return
       }
 
-      const key = `${session.id}:${value}`
+      const link = hostedArtifactLink(value)
+
+      if (link?.kind === 'ticket') {
+        return
+      }
+
+      const known = link?.kind === 'viewer' ? hosted.get(link.id) : undefined
+      // One row per hosted artifact, at its exact viewer URL, however its link was written.
+      const key = known && link ? `${session.id}:hosted:${link.id}` : `${session.id}:${value}`
 
       if (found.has(key)) {
         return
       }
 
+      const shown = known ? known.viewerUrl : value
+
       found.set(key, {
         id: key,
-        kind: artifactKind(value),
-        value,
-        href: artifactHref(value),
-        label: artifactLabel(value),
+        kind: artifactKind(shown),
+        value: shown,
+        href: artifactHref(shown),
+        label: artifactLabel(shown),
         sessionId: session.id,
         profile: session.profile,
         sessionTitle: title,
-        timestamp: artifactTimestamp(message, session)
+        timestamp: artifactTimestamp(message, session),
+        ...(known && link ? { hostedId: link.id } : {}),
+        ...(known?.title ? { title: known.title } : {})
       })
     })
   }
 
-  return Array.from(found.values())
+  return withLatestHostedTitles(Array.from(found.values()), hosted)
+}
+
+/** Each hosted artifact's row under the name it has now (a later update may have renamed it). */
+function withLatestHostedTitles(
+  artifacts: ArtifactRecord[],
+  hosted: Map<string, KnownHostedArtifact>
+): ArtifactRecord[] {
+  return artifacts.map(artifact => {
+    const latest = artifact.hostedId ? hosted.get(artifact.hostedId)?.title : undefined
+
+    return latest && latest !== artifact.title ? { ...artifact, title: latest } : artifact
+  })
 }
 
 export async function loadArtifactsForSessions(
@@ -551,6 +765,8 @@ export async function loadArtifactsForSessions(
   for (const session of sessions) {
     try {
       const sessionArtifacts = new Map<string, ArtifactRecord>()
+      const hostedArtifacts = new Map<string, KnownHostedArtifact>()
+      const toolCalls = new Map<string, Record<string, unknown>>()
       let offset = 0
 
       while (true) {
@@ -563,9 +779,15 @@ export async function loadArtifactsForSessions(
           )
         }
 
-        for (const artifact of collectArtifactsForSession(session, page.messages)) {
-          if (!sessionArtifacts.has(artifact.id)) {
+        for (const artifact of collectArtifactsForSession(session, page.messages, hostedArtifacts, toolCalls)) {
+          const earlier = sessionArtifacts.get(artifact.id)
+
+          if (!earlier) {
             sessionArtifacts.set(artifact.id, artifact)
+          } else if (earlier.page && artifact.page) {
+            // A later transcript page holds newer versions of the same page.
+            const versions = mergePageVersions(earlier.page.versions, artifact.page.versions)
+            sessionArtifacts.set(artifact.id, { ...artifact, page: { ...artifact.page, versions } })
           }
         }
 
@@ -577,11 +799,24 @@ export async function loadArtifactsForSessions(
         offset += page.messages.length
       }
 
-      artifacts.push(...sessionArtifacts.values())
+      artifacts.push(...withLatestHostedTitles([...sessionArtifacts.values()], hostedArtifacts))
     } catch (error) {
       failures.push({ error, session })
     }
   }
 
   return { artifacts, failures }
+}
+
+/**
+ * Drop the link row of a hosted artifact that is a page's saved copy: the page's own row already says
+ * who can see it, so one thing never shows twice. `savedAs` answers a page's saved hosted artifact id.
+ */
+export function withoutSavedPageLinks(
+  artifacts: ArtifactRecord[],
+  savedAs: (page: ArtifactPage) => string | undefined
+): ArtifactRecord[] {
+  const saved = new Set(artifacts.flatMap(artifact => (artifact.page ? [savedAs(artifact.page)] : [])))
+
+  return artifacts.filter(artifact => !(artifact.kind === 'link' && artifact.hostedId && saved.has(artifact.hostedId)))
 }

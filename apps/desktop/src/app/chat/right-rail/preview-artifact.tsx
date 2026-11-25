@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import DOMPurify from 'dompurify'
 import { useEffect, useMemo, useState } from 'react'
 
+import { LocalArtifactShare } from '@/components/assistant-ui/local-artifact-share'
 import { CopyButton } from '@/components/ui/copy-button'
 import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
 import { Tip } from '@/components/ui/tooltip'
@@ -9,6 +10,7 @@ import { useI18n } from '@/i18n'
 import { artifactDownloadName, type ArtifactKind } from '@/lib/artifact-detect'
 import { downloadTextFile } from '@/lib/download-text'
 import { ChevronLeft, ChevronRight, Download, ExternalLink } from '@/lib/icons'
+import { composeArtifactHtml } from '@/lib/local-artifact-publish'
 import { pathToFileUrl } from '@/lib/local-preview'
 import { $artifactRegistry, $artifactVersionSelection, findArtifact, selectArtifactVersion } from '@/store/artifacts'
 import { notifyError } from '@/store/notifications'
@@ -27,23 +29,6 @@ const SOURCE_LANGUAGE_BY_KIND: Record<ArtifactKind, string | undefined> = {
 
 const HEADER_BUTTON_CLASS =
   'flex items-center gap-1 rounded-md px-1.5 text-[0.625rem] font-bold text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40'
-
-/** Wrap an HTML fragment in a minimal document shell; full documents pass
- *  through untouched. Keeps generated fragments (no <html>/<body>) rendering
- *  with sane defaults instead of quirks-mode soup. */
-function composeArtifactHtml(content: string): string {
-  if (/<html[\s>]|<!doctype\s+html/i.test(content)) {
-    return content
-  }
-
-  return [
-    '<!doctype html>',
-    '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
-    '<style>body{margin:0;font-family:system-ui,sans-serif}</style></head><body>',
-    content,
-    '</body></html>'
-  ].join('\n')
-}
 
 /** Write the composed document to a real temp file through the existing
  *  buffer-save IPC, then hand it to the OS browser. A blob/data URL can't
@@ -165,6 +150,9 @@ function VersionStepper({
   )
 }
 
+/** Test seam (moved with the publish helpers): forget the cached hosted artifacts answer. */
+export { resetHostedArtifactsStatus } from '@/lib/local-artifact-publish'
+
 /**
  * Renders an `artifact` preview target inside the real preview pane: the
  * shared mode switcher up top (RENDERED / SOURCE, plus the version stepper and
@@ -242,6 +230,9 @@ export function ArtifactPreview({ onClose, target }: { onClose?: () => void; tar
                 <Download className="size-3" />
               </button>
             </Tip>
+            {record.kind === 'html' && window.hermesDesktop && (
+              <LocalArtifactShare buttonClassName={HEADER_BUTTON_CLASS} record={record} version={version} />
+            )}
             {record.kind === 'html' && window.hermesDesktop && (
               <Tip label={copy.openInBrowser}>
                 <button

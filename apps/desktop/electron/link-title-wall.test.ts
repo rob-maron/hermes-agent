@@ -101,3 +101,14 @@ test('a refused redirect hop never escalates to the hidden renderer', async () =
   assert.equal(title, '')
   assert.equal(rendererCalls, 0)
 })
+
+test("a bot-check page's title is never a link's title, from either tier", async () => {
+  // A bot check answers an automated fetch with its challenge page; that title names the check, not the page.
+  const title = await resolveLinkTitle({
+    curl: tier1({ title: 'Security Checkpoint' }),
+    renderer: async () => 'Security Checkpoint',
+    url: 'https://portal.example.com/a/page'
+  })
+
+  assert.equal(title, '')
+})

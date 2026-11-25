@@ -4,13 +4,25 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import {
+  LocalArtifactShare,
+  useHostedArtifactsAvailable,
+  useLocalArtifactAudience,
+  usePublishedArtifact
+} from '@/components/assistant-ui/local-artifact-share'
 import { CodeCardIcon } from '@/components/chat/code-card'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { useI18n } from '@/i18n'
 import type { ArtifactDetection } from '@/lib/artifact-detect'
 import { codiconForLanguage } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
-import { $artifactRegistry, artifactsForSession, openArtifact, upsertArtifact } from '@/store/artifacts'
+import {
+  $artifactRegistry,
+  type ArtifactRecord,
+  artifactsForSession,
+  openArtifact,
+  upsertArtifact
+} from '@/store/artifacts'
 
 interface ArtifactCardProps {
   code: string
@@ -26,6 +38,17 @@ const KIND_ICON: Record<ArtifactDetection['kind'], string> = {
 
 function detectionIcon(detection: ArtifactDetection): string {
   return detection.kind === 'code' ? codiconForLanguage(detection.language) : KIND_ICON[detection.kind]
+}
+
+const CARD_SHARE_BUTTON_CLASS =
+  'flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[length:var(--conversation-tool-font-size)] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40'
+
+/** " · Only you can see it" (or who can, once saved): tells the user the page can be shared. */
+function ArtifactCardAudience({ record }: { record: ArtifactRecord }) {
+  const available = useHostedArtifactsAvailable()
+  const audience = useLocalArtifactAudience(usePublishedArtifact(record))
+
+  return available && audience ? <> · {audience}</> : null
 }
 
 /**
@@ -94,43 +117,60 @@ export function ArtifactCard({ code, detection, streaming = false }: ArtifactCar
     openArtifact(result.artifactId, versionIndex === -1 ? undefined : versionIndex)
   }
 
+  // A page (HTML) can be shared; the card shares the version it shows.
+  const shareable = !streaming && record?.kind === 'html'
+
+  const cardVersion =
+    record?.versions.find(version => version.content === trimmed) ?? record?.versions[record.versions.length - 1]
+
   return (
-    <button
+    <div
       className={cn(
         WIDGET_SHELL_CLASS,
-        'group/artifact my-1.5 flex w-full max-w-md items-center gap-2.5 overflow-hidden text-left',
-        streaming ? 'cursor-default' : 'cursor-pointer'
+        'group/artifact my-1.5 flex w-full max-w-md items-center gap-2.5 overflow-hidden'
       )}
-      data-slot="aui_artifact-card"
-      disabled={streaming}
-      onClick={open}
-      type="button"
+      data-slot="aui_artifact-card-shell"
     >
-      <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted/55 text-muted-foreground">
-        <CodeCardIcon className="text-[1rem]" name={detectionIcon(detection)} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span
-          className={cn(
-            'block truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground',
-            streaming && 'shimmer text-foreground/55'
-          )}
-        >
-          {title}
+      <button
+        className={cn(
+          'flex min-w-0 flex-1 items-center gap-2.5 text-left',
+          streaming ? 'cursor-default' : 'cursor-pointer'
+        )}
+        data-slot="aui_artifact-card"
+        disabled={streaming}
+        onClick={open}
+        type="button"
+      >
+        <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted/55 text-muted-foreground">
+          <CodeCardIcon className="text-[1rem]" name={detectionIcon(detection)} />
         </span>
-        <span className="block truncate text-[length:var(--conversation-tool-font-size)] text-muted-foreground">
-          {streaming
-            ? copy.generating(lineCount)
-            : versionCount > 1
-              ? `${kindLabel} · ${copy.versionBadge(versionCount)}`
-              : kindLabel}
+        <span className="min-w-0 flex-1">
+          <span
+            className={cn(
+              'block truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground',
+              streaming && 'shimmer text-foreground/55'
+            )}
+          >
+            {title}
+          </span>
+          <span className="block truncate text-[length:var(--conversation-tool-font-size)] text-muted-foreground">
+            {streaming
+              ? copy.generating(lineCount)
+              : versionCount > 1
+                ? `${kindLabel} · ${copy.versionBadge(versionCount)}`
+                : kindLabel}
+            {shareable && record && <ArtifactCardAudience record={record} />}
+          </span>
         </span>
-      </span>
-      {!streaming && (
-        <span className="shrink-0 text-[length:var(--conversation-tool-font-size)] font-medium text-muted-foreground opacity-0 transition-opacity group-hover/artifact:opacity-100">
-          {copy.open}
-        </span>
+        {!streaming && (
+          <span className="shrink-0 text-[length:var(--conversation-tool-font-size)] font-medium text-muted-foreground opacity-0 transition-opacity group-hover/artifact:opacity-100">
+            {copy.open}
+          </span>
+        )}
+      </button>
+      {shareable && record && cardVersion && window.hermesDesktop && (
+        <LocalArtifactShare buttonClassName={CARD_SHARE_BUTTON_CLASS} record={record} version={cardVersion} />
       )}
-    </button>
+    </div>
   )
 }

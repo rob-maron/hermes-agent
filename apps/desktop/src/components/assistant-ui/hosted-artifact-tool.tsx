@@ -7,17 +7,23 @@ import { useComposerScope, useComposerSurfaceId } from '@/app/chat/composer/scop
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import { artifactContentHash } from '@/lib/artifact-detect'
 import { ExternalLink } from '@/lib/external-link'
 import {
   hostedArtifactFrameFor,
   type HostedArtifactFramePolicy,
   type HostedArtifactResult,
-  parseHostedArtifactResult
+  isHostedArtifactUploadTool,
+  parseHostedArtifactResult,
+  uploadPreviewHtml
 } from '@/lib/hosted-artifacts'
 import { cn } from '@/lib/utils'
 import { $hostedArtifacts, recordHostedArtifactVersion } from '@/store/artifacts'
+import { recordHostedContent } from '@/store/published-artifacts'
 
 import { useHostedArtifactBridge } from './hosted-artifact-bridge'
+import { HostedArtifactUploadPreview } from './hosted-artifact-sharing'
+import { ShareArtifactButton, sharingLabel, useHostedArtifactSharing } from './share-artifact-dialog'
 
 const MIN_HEIGHT = 160
 const MAX_HEIGHT = 1200
@@ -52,22 +58,42 @@ function resultText(result: unknown): string {
  * A hosted artifact in the transcript: the live artifact framed from its own
  * origin through the MCP Apps bridge when this build may frame it, otherwise a
  * link card. The viewer link is always there — it is the durable way in once
- * the frame's short-lived ticket has expired.
+ * the frame's short-lived ticket has expired. One the user owns (the agent
+ * created or updated it) also says who can see it and offers Share, which
+ * opens its share page: sharing happens only there.
  */
 export const HostedArtifactCard: FC<HostedArtifactPartProps & { artifact: HostedArtifactResult }> = ({
   args,
   artifact,
   completedAt,
   framePolicy,
-  result
+  result,
+  toolName
 }) => {
   const { t } = useI18n()
   const copy = t.hostedArtifact
   const cached = useStore($hostedArtifacts)[artifact.id]
+  const owned = isHostedArtifactUploadTool(toolName)
+  const sharing = useHostedArtifactSharing(owned ? artifact.id : null)
 
   useEffect(() => {
     recordHostedArtifactVersion(artifact)
   }, [artifact])
+
+  // The page the agent uploaded: the artifact panel's Publish then reuses this hosted artifact.
+  useEffect(() => {
+    const page = owned ? uploadPreviewHtml(toolName, args)?.trim() : undefined
+
+    if (page) {
+      recordHostedContent({
+        hash: artifactContentHash(page),
+        hostedId: artifact.id,
+        publishedAt: Date.now(),
+        version: artifact.version,
+        viewerUrl: artifact.viewerUrl
+      })
+    }
+  }, [args, artifact, owned, toolName])
 
   // Decided once per mount: a ticket that was fresh when the card mounted
   // has already been exchanged for the frame's cookie.
@@ -89,8 +115,15 @@ export const HostedArtifactCard: FC<HostedArtifactPartProps & { artifact: Hosted
             {copy.version(artifact.version)}
             {newer !== null && ` · ${copy.newerVersion(newer)}`}
             {origin === null && ` · ${copy.linkOnly}`}
+            {sharing && ` · ${sharingLabel(copy, sharing)}`}
           </span>
         </span>
+        {owned && (
+          <ShareArtifactButton
+            className="shrink-0"
+            target={{ artifactId: artifact.id, title, viewerUrl: artifact.viewerUrl }}
+          />
+        )}
         <ExternalLink
           className="shrink-0 text-[length:var(--conversation-tool-font-size)] font-medium"
           data-slot="aui_hosted-artifact-viewer-link"
@@ -213,18 +246,29 @@ export function HostedArtifactMessagePrompt({ onDone, text }: { onDone: () => vo
   )
 }
 
-/** Tool-part entry: the card for a successful result, else `fallback`. */
+/** Tool-part entry: the card for a successful result, else `fallback`. A pending upload (waiting on
+ *  its approval card) also offers a local preview of the page it would send. */
 export function HostedArtifactToolPart({
   fallback,
   ...props
 }: HostedArtifactPartProps & { fallback: FC<HostedArtifactPartProps> }) {
-  const { isError, result } = props
+  const { args, isError, result, toolName } = props
   const artifact = useMemo(() => hostedArtifactFromPart({ isError, result }), [isError, result])
+
+  const preview = useMemo(
+    () => (result === undefined && !isError ? uploadPreviewHtml(toolName, args) : null),
+    [args, isError, result, toolName]
+  )
 
   if (!artifact) {
     const Fallback = fallback
 
-    return <Fallback {...props} />
+    return (
+      <>
+        <Fallback {...props} />
+        {preview !== null && <HostedArtifactUploadPreview html={preview} />}
+      </>
+    )
   }
 
   return <HostedArtifactCard {...props} artifact={artifact} />

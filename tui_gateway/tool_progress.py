@@ -357,9 +357,13 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     from agent.terminal_image import tool_image_path
     if image_path := tool_image_path(name, args, payload["result"], is_error=_detect_tool_failure(name, result)[0]):
         payload["image_path"] = image_path
-    from tools.hosted_artifacts import viewer_link
+    from tools.hosted_artifacts import share_link, viewer_link
     if link := viewer_link(name, result):
         payload["artifact_link"] = link.as_payload()
+    elif share := share_link(name, result):
+        # A share Hermes handed to the user: its share page, in the same link row (no new event field).
+        page = f"{share.title} \u2014 share page" if share.title else "share page"
+        payload["artifact_link"] = {"url": share.url, "title": page}
     if _session_verbose(sid) and (result_text := _tool_result_text(result)):
         payload["result_text"] = result_text
     from tools.todo_tool import is_todo_tool_name

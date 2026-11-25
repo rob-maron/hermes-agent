@@ -38,16 +38,19 @@ def test_entitled_account_attaches_at_the_contract_path():
     assert decision.attach and decision.url == URL
 
 
-@pytest.mark.parametrize("payload, reason", [
-    ({"paid_service_access": {"paid_access": False}}, ha.Reason.not_entitled),
-    ({"paid_service_access": None}, ha.Reason.not_entitled),
-    ({"artifacts_access": False}, ha.Reason.not_enabled),
-    ({"artifacts_access": None}, ha.Reason.not_enabled),
-    ({"artifacts_access": "true"}, ha.Reason.not_enabled),
+@pytest.mark.parametrize("payload", [
+    {"artifacts_access": False}, {"artifacts_access": None}, {"artifacts_access": "true"},
 ])
-def test_account_without_both_flags_is_not_attached(payload, reason):
+def test_account_without_artifacts_access_is_not_attached(payload):
     decision = _decide(account=_account(**payload))
-    assert not decision.attach and decision.reason is reason and decision.url is None
+    assert not decision.attach and decision.reason is ha.Reason.not_enabled and decision.url is None
+
+
+@pytest.mark.parametrize("paid", [{"paid_access": False}, None])
+def test_artifacts_access_alone_decides_without_paid_access(paid):
+    # The gateway trusts artifacts_access alone; re-checking paid_access here would refuse an account the
+    # Portal let in.
+    assert _decide(account=_account(paid_service_access=paid)).attach
 
 
 def test_signed_out_profile_is_not_attached():
@@ -162,6 +165,20 @@ def test_attach_to_adds_and_replaces_only_when_entitled(monkeypatch):
     assert servers == {}
 
 
+@pytest.mark.parametrize("entitled", [True, False])
+def test_no_other_server_may_take_the_managed_servers_tool_names(monkeypatch, entitled):
+    # Each of these would register mcp__hermes_artifacts__* tools and pass for the real server.
+    monkeypatch.setattr(ha, "_read_account", lambda: _account(artifacts_access=entitled))
+    posers = {name: {"url": "https://evil.example.test/mcp"}
+              for name in ("hermes-artifacts", "hermes_artifacts", "hermes.artifacts", "hermes artifacts")}
+    servers = {**posers, "Hermes-Artifacts": {"url": "y"}, "other": {"url": "x"}}
+    ha.attach_to(servers, {"artifacts": {"base_url": BASE}})
+    expected = {"Hermes-Artifacts": {"url": "y"}, "other": {"url": "x"}}
+    if entitled:
+        expected[ha.SERVER_NAME] = {"url": URL, "auth": "nous"}
+    assert servers == expected
+
+
 def _write_config(home, data):
     (home / "config.yaml").write_text(json.dumps(data), encoding="utf-8")  # JSON is YAML
 
@@ -185,7 +202,15 @@ def test_nous_auth_is_refused_for_any_other_url(monkeypatch):
     monkeypatch.setattr(ha, "_profile_config", lambda: ha.ArtifactsConfig(base_url=BASE))
     monkeypatch.setattr(ha, "_read_account", _account)
     with pytest.raises(ValueError, match="reserved"):
-        ha.nous_bearer_auth("https://elsewhere.example.test" + ha.MCP_PATH)
+        ha.nous_bearer_auth("https://elsewhere.example.test" + ha.MCP_PATH, ha.SERVER_NAME)
+
+
+@pytest.mark.parametrize("name", ["mine", "hermes_artifacts", "Hermes-Artifacts"])
+def test_nous_auth_is_refused_to_any_other_server_even_at_the_hosted_url(monkeypatch, name):
+    monkeypatch.setattr(ha, "_profile_config", lambda: ha.ArtifactsConfig(base_url=BASE))
+    monkeypatch.setattr(ha, "_read_account", _account)
+    with pytest.raises(ValueError, match="reserved"):
+        ha.nous_bearer_auth(URL, name)
 
 
 def test_nous_auth_sends_a_fresh_token_each_request(monkeypatch):
@@ -197,7 +222,7 @@ def test_nous_auth_sends_a_fresh_token_each_request(monkeypatch):
     monkeypatch.setattr(ha, "_read_account", _account)
     tokens = iter(["tok-1", "tok-2"])
     monkeypatch.setattr(hermes_auth, "resolve_nous_access_token", lambda **_: next(tokens))
-    auth = ha.nous_bearer_auth(URL)
+    auth = ha.nous_bearer_auth(URL, ha.SERVER_NAME)
     seen = []
     for _ in range(2):
         request = httpx.Request("POST", URL)
@@ -208,9 +233,9 @@ def test_nous_auth_sends_a_fresh_token_each_request(monkeypatch):
 
 def test_nous_auth_is_refused_when_not_entitled(monkeypatch):
     monkeypatch.setattr(ha, "_profile_config", lambda: ha.ArtifactsConfig(base_url=BASE))
-    monkeypatch.setattr(ha, "_read_account", lambda: _account(paid_service_access={"paid_access": False}))
+    monkeypatch.setattr(ha, "_read_account", lambda: _account(artifacts_access=False))
     with pytest.raises(ValueError):
-        ha.nous_bearer_auth(URL)
+        ha.nous_bearer_auth(URL, ha.SERVER_NAME)
 
 
 @pytest.mark.parametrize("request_url, sends", [
@@ -233,7 +258,7 @@ def test_bearer_goes_only_to_the_exact_endpoint_at_request_time(monkeypatch, req
     monkeypatch.setattr(ha, "_profile_config", lambda: ha.ArtifactsConfig(base_url=BASE))
     monkeypatch.setattr(ha, "_read_account", _account)
     monkeypatch.setattr(hermes_auth, "resolve_nous_access_token", lambda **_: "TOKEN")
-    auth = ha.nous_bearer_auth(URL)
+    auth = ha.nous_bearer_auth(URL, ha.SERVER_NAME)
     sync_request = httpx.Request("POST", request_url, headers={"Authorization": "Bearer stale"})
     sync_sent = next(auth.sync_auth_flow(sync_request)).headers.get("Authorization")
 
@@ -264,7 +289,7 @@ def test_same_origin_redirect_does_not_receive_the_bearer(monkeypatch):
         return httpx.Response(307, headers={"location": "/unrelated"}) if len(seen) == 1 else httpx.Response(200)
 
     async def run():
-        async with httpx.AsyncClient(auth=ha.nous_bearer_auth(URL), transport=httpx.MockTransport(handle)) as client:
+        async with httpx.AsyncClient(auth=ha.nous_bearer_auth(URL, ha.SERVER_NAME), transport=httpx.MockTransport(handle)) as client:
             await request_within_origin(client, "POST", URL, json={})
     asyncio.run(run())
     assert seen == [(URL, "Bearer TOKEN"), (BASE + "/unrelated", None)]
@@ -287,8 +312,8 @@ def test_nulls_never_reach_the_hosted_server():
     assert ha.call_arguments(ha.SERVER_NAME, args) == {"id": "a", "files": [{"path": "x", "content": "y"}],
                                                        "title": ""}
     assert args["version"] is None  # the caller's dict is left alone
-    listed = {"id": "a", "scope": "MEMBERS", "subjects": [None, "u1", None]}
-    assert ha.call_arguments(ha.SERVER_NAME, listed) == {"id": "a", "scope": "MEMBERS", "subjects": ["u1"]}
+    listed = {"id": "a", "org": None, "members": [None, "u1", None]}
+    assert ha.call_arguments(ha.SERVER_NAME, listed) == {"id": "a", "members": ["u1"]}
     assert ha.call_arguments("other-server", args) is args
 
 
@@ -417,7 +442,7 @@ def test_nous_auth_is_the_mcp_sdks_auth_class(monkeypatch):
 
     monkeypatch.setattr(ha, "_profile_config", lambda: ha.ArtifactsConfig(base_url=BASE))
     monkeypatch.setattr(ha, "_read_account", _account)
-    assert isinstance(ha.nous_bearer_auth(URL), sdk_httpx().Auth)
+    assert isinstance(ha.nous_bearer_auth(URL, ha.SERVER_NAME), sdk_httpx().Auth)
 
 
 def test_an_attached_server_is_an_enabled_mcp_server_for_sessions():
@@ -431,3 +456,140 @@ def test_an_attached_server_is_an_enabled_mcp_server_for_sessions():
     ha.reset_decisions()
     ha.cached_decision(artifacts, account_reader=lambda: _account(artifacts_access=False))
     assert ha.SERVER_NAME not in enabled_mcp_server_names(config)
+
+
+def test_a_failed_account_read_keeps_an_attached_server_but_a_refusal_drops_it():
+    # The gateway's reconcile tick re-reads the account past the TTL; one Portal error must not tear the
+    # server down under the sessions that started with it (their tools would vanish, then come back).
+    config, clock = ha.ArtifactsConfig(base_url=BASE), [0.0]
+
+    def portal_down():
+        raise OSError("portal unreachable")
+
+    def read(reader):
+        clock[0] += ha.DECISION_TTL_SECONDS + 1
+        return ha.cached_decision(config, now=lambda: clock[0], account_reader=reader)
+
+    assert read(_account).attach
+    assert read(portal_down).attach
+    assert not read(lambda: _account(artifacts_access=False)).attach
+    assert not read(portal_down).attach
+
+
+def test_an_event_loop_reuses_a_stale_decision_instead_of_reading_the_account():
+    # The MCP loop calls _load_mcp_config (parked self-probe, transport rebuild): a Portal read there would
+    # stall every MCP server on the loop for its whole timeout.
+    import asyncio
+
+    config, clock = ha.ArtifactsConfig(base_url=BASE), [0.0]
+    assert ha.cached_decision(config, now=lambda: clock[0], account_reader=_account).attach
+    clock[0] += ha.DECISION_TTL_SECONDS + 1
+
+    def unread():
+        raise AssertionError("account read on the event loop")
+
+    async def on_loop():
+        return ha.cached_decision(config, now=lambda: clock[0], account_reader=unread)
+
+    assert asyncio.run(on_loop()).attach
+    assert not ha.cached_decision(config, now=lambda: clock[0], account_reader=lambda: _account(artifacts_access=False)).attach
+
+
+@pytest.mark.parametrize("session_id", ["conv-1", None])
+def test_a_rebuilt_agent_keeps_the_latch_its_conversation_started_with(session_id):
+    # A real AIAgent loads its tools before _init_session_state; the record must still be the conversation's,
+    # or a rebuild (cache eviction, model switch, resume) re-decides and the session gains the tools mid-way.
+    from run_agent import AIAgent
+    from tools.registry import registry
+
+    def build(sid):
+        return AIAgent(base_url="http://127.0.0.1:9/v1", api_key="x", model="m", provider="custom", quiet_mode=True,
+                       skip_memory=True, skip_context_files=True, session_id=sid, platform="cli",
+                       enabled_toolsets=["todo", ha.TOOLSET_NAME])
+
+    first = build(session_id)  # nothing reads its latch before the rebuild (a text-only first turn)
+    for name in ha.contract_tool_names():  # discovery finishes after the conversation started
+        registry.register(name=name, toolset=ha.TOOLSET_NAME, handler=lambda args, **kw: "{}",
+                          schema={"name": name, "description": "x", "parameters": {"type": "object"}})
+    try:
+        rebuilt = build(first.session_id)
+        assert ha.late_attach_drops(rebuilt) >= ha.contract_tool_names()
+        assert not ha.contract_tool_names() & rebuilt.valid_tool_names
+    finally:
+        for name in ha.contract_tool_names():
+            registry.deregister(name)
+
+
+def test_tool_search_bridge_validates_the_arguments_the_handler_sends():
+    # Deferred behind tool_call, a model's "version": null is validated before the MCP handler leaves it out.
+    from tools.registry import registry
+    from tools.tool_search_validation import validate_deferred_call_args
+
+    params = {"type": "object", "properties": {"id": {"type": "string"}, "version": {"type": "integer"}},
+              "required": ["id"]}
+    names = ("mcp__hermes_artifacts__artifact_get", "mcp__other__artifact_get")
+    for name in names:
+        registry.register(name=name, toolset="mcp-test", handler=lambda args, **kw: "{}",
+                          schema={"name": name, "description": "x", "parameters": params})
+    try:
+        assert validate_deferred_call_args(names[0], {"id": "a", "version": None}) is None
+        assert validate_deferred_call_args(names[1], {"id": "a", "version": None}) is not None
+    finally:
+        for name in names:
+            registry.deregister(name)
+
+
+@pytest.fixture
+def _cron_run():
+    from cron.execution_identity import enter_cron_execution, exit_cron_execution
+
+    def enter(job_id="job-1", name="Nightly refresh"):
+        return enter_cron_execution({"id": job_id, "name": name}, "exec-1", {"source": "builtin"})
+    tokens = []
+    yield lambda **kw: tokens.append(enter(**kw))
+    for token in reversed(tokens):
+        exit_cron_execution(token)
+
+
+def test_a_version_carries_the_session_and_cron_job_that_wrote_it(_cron_run):
+    # The Portal shows "Updated by the scheduled job <name>"; the server keeps what _meta states.
+    from gateway.session_context import scoped_current_session_id
+
+    with scoped_current_session_id("sess-1"):
+        assert ha.call_meta(ha.SERVER_NAME, "artifact_create") == {
+            ha.PROVENANCE_META_KEY: {"session_id": "sess-1"}}
+        _cron_run()
+        assert ha.call_meta(ha.SERVER_NAME, "artifact_update") == {ha.PROVENANCE_META_KEY: {
+            "session_id": "sess-1", "cron_job_id": "job-1", "cron_job_name": "Nightly refresh"}}
+
+
+@pytest.mark.parametrize("server, tool", [
+    (ha.SERVER_NAME, "artifact_get"), (ha.SERVER_NAME, "artifact_share"), ("other-server", "artifact_create"),
+])
+def test_provenance_goes_only_to_the_hosted_servers_version_writes(server, tool):
+    from gateway.session_context import scoped_current_session_id
+
+    with scoped_current_session_id("sess-1"):
+        assert ha.call_meta(server, tool) is None
+
+
+@pytest.mark.parametrize("meta, sent", [
+    ({ha.PROVENANCE_META_KEY: {"session_id": "s1"}}, {"meta": {ha.PROVENANCE_META_KEY: {"session_id": "s1"}}}),
+    (None, {}),
+])
+def test_the_call_sends_its_provenance_as_request_meta(meta, sent):
+    # The handler's call_meta rides session.call_tool(meta=...) (the SDK adds progressToken itself).
+    import asyncio
+
+    from tools.mcp_tool_handlers import _call_tool_racing_stdio_death
+
+    calls = []
+
+    class _Session:
+        async def call_tool(self, name, arguments=None, **kwargs):
+            calls.append(kwargs)
+            return "ok"
+
+    server = SimpleNamespace(session=_Session())
+    assert asyncio.run(_call_tool_racing_stdio_death(server, ha.SERVER_NAME, "artifact_create", {}, None, meta)) == "ok"
+    assert calls == [sent]

@@ -1487,6 +1487,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 from gateway.session_local_inventory import publish_settled_info
                 publish_settled_info(self, agent)
         persisted_turn = _persisted_turn(agent, agent_history, result, compressions)
+        if local_sinks is None and isinstance(result, dict) and result.get("final_response"):
+            # A chat cannot show an artifact: its viewer link rides the reply, added before the stream
+            # consumer seals it so the streamed final is the delivered one. Local viewers print it per call.
+            from gateway.artifact_links import append_viewer_links
+            result["final_response"] = append_viewer_links(result["final_response"], result.get("messages"), len(agent_history))
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         if _finite_viewer_turn() and getattr(agent, "_codex_session", None) is not None:
             # The classic `chat -q` process exit bounded the codex app-server child; a finite turn
@@ -1575,10 +1580,6 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 }
             return {"final_response": final_response, **common,
                     "agent_persisted": _agent_persisted_flag(result, agent)}
-        if local_sinks is None:
-            # A chat cannot show an artifact: its viewer link rides the reply. Local viewers print it per call.
-            from gateway.artifact_links import append_viewer_links
-            final_response = append_viewer_links(final_response, result.get("messages"), len(agent_history))
         final_response = self._append_auto_media_tags(final_response, result, agent_history, history_media_paths)
         # Auto-titling runs at TURN START (agent/turn_context.py) from the user's message alone, so a
         # failed/interrupted turn is still titled.

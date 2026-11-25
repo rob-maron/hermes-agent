@@ -8,7 +8,7 @@ the profile's Nous access token as the bearer.
 | File | What it proves |
 |---|---|
 | `test_artifact_edit_flow.py` | create → update from a stale base (the model sees a `stale_base` tool error with `head_version`) → update from that head → show. On the fake: the server received exactly those `tools/call`s with those arguments, every request carried the Nous bearer, the entitlement came from a fresh `/api/oauth/account` read with no token refresh. `content_url` is never printed to stdout. |
-| `test_artifacts_fail_closed.py` | Account says `artifacts_access` false or absent, `paid_access` false, `artifacts.enabled: false`, or the Portal is down → no `hermes-artifacts` tool is offered to the model (every provider request's `tools[]`, including the Tool Search catalog) and the server receives nothing. An `entitled` control case proves the harness does attach. |
+| `test_artifacts_fail_closed.py` | Account says `artifacts_access` false or absent, `artifacts.enabled: false`, or the Portal is down → no `hermes-artifacts` tool is offered to the model (every provider request's `tools[]`, including the Tool Search catalog) and the server receives nothing. An `entitled` control case proves the harness does attach, and `unpaid-account-attaches` that `paid_access` false does not refuse an account the Portal gave `artifacts_access`. |
 
 Fakes: `tests/fakes/hosted_artifacts_server.py` (real `mcp` SDK server, subprocess) and
 `tests/fakes/nous_portal_account.py` (in-process Portal: `GET /api/oauth/account` with a configurable
@@ -29,7 +29,7 @@ all of these are set:
 | Variable | Value |
 |---|---|
 | `HERMES_ARTIFACTS_E2E_BASE_URL` | The plane's origin, e.g. `https://artifacts.example.test` (Hermes appends `/v1/artifacts/mcp`). Plain `http` is accepted only for `localhost`, `127.0.0.1`, `::1` and `*.localhost` hosts. |
-| `HERMES_ARTIFACTS_E2E_PORTAL_URL` | The Portal origin the plane trusts; Hermes reads `<portal>/api/oauth/account` from it and must get `artifacts_access: true` and `paid_service_access.paid_access: true`. |
+| `HERMES_ARTIFACTS_E2E_PORTAL_URL` | The Portal origin the plane trusts; Hermes reads `<portal>/api/oauth/account` from it and must get `artifacts_access: true`. |
 | `HERMES_ARTIFACTS_E2E_TOKEN_FILE` | Path to a file holding a Nous Portal access token for that user (JWT). Hermes sends it as the bearer to both the Portal and the plane. Give it at least 10 minutes of remaining life: the test login has no usable refresh token. |
 | `HERMES_ARTIFACTS_E2E_TOKEN` | The token itself; an alternative to `_TOKEN_FILE` for a direct `pytest` run only. `scripts/run_tests.sh` forwards no credential-valued variable, so use `_TOKEN_FILE` with the runner. |
 

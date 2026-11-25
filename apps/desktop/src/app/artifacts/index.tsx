@@ -1,8 +1,10 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
+import { useLocalArtifactAudience } from '@/components/assistant-ui/local-artifact-share'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -29,12 +31,15 @@ import {
   urlSlugTitleLabel,
   useLinkTitle
 } from '@/lib/external-link'
-import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
+import { AppWindow, FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
 import { downloadGatewayMediaFile, isArtifactFilePath, isRemoteGateway } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
+import { selectArtifactVersion, upsertArtifact } from '@/store/artifacts'
 import { notify, notifyError } from '@/store/notifications'
+import { openPreview } from '@/store/preview'
+import { $hostedByContent, $publishedArtifacts, publishedFor } from '@/store/published-artifacts'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -46,8 +51,10 @@ import {
   ARTIFACT_FILTERS,
   type ArtifactFilter,
   artifactImageSrc,
+  type ArtifactPage,
   type ArtifactRecord,
-  loadArtifactsForSessions
+  loadArtifactsForSessions,
+  withoutSavedPageLinks
 } from './artifact-utils'
 
 function formatArtifactTime(timestamp: number): string {
@@ -94,6 +101,7 @@ function paginationItems(page: number, pageCount: number): Array<number | 'ellip
 type CellCtx = {
   onOpen: (artifact: ArtifactRecord) => void | Promise<void>
   onOpenChat: (sessionId: string) => void
+  onOpenPage: (artifact: ArtifactRecord) => void
 }
 
 interface ArtifactColumn {
@@ -105,7 +113,24 @@ interface ArtifactColumn {
 }
 
 const itemsLabel = (f: ArtifactFilter, a: Translations['artifacts']) =>
-  f === 'link' ? a.itemsLink : f === 'file' ? a.itemsFile : a.itemsGeneric
+  f === 'link' ? a.itemsLink : f === 'file' ? a.itemsFile : f === 'page' ? a.itemsPage : a.itemsGeneric
+
+/** What a page from a chat was saved as, if anything: its own save, or a copy the agent uploaded. */
+function usePageSavedAs(): (page: ArtifactPage) => ReturnType<typeof publishedFor> {
+  const own = useStore($publishedArtifacts)
+  const byContent = useStore($hostedByContent)
+
+  return useCallback(
+    (page: ArtifactPage) =>
+      publishedFor(
+        page.localId,
+        page.versions.map(version => version.hash),
+        own,
+        byContent
+      ),
+    [byContent, own]
+  )
+}
 
 interface ArtifactsViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -115,8 +140,15 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const { t } = useI18n()
   const a = t.artifacts
   const navigate = useNavigate()
-  const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
+  const [loaded, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
+  const savedAs = usePageSavedAs()
+
+  // A page that was saved keeps one row: its hosted copy's link row goes.
+  const artifacts = useMemo(
+    () => (loaded ? withoutSavedPageLinks(loaded, page => savedAs(page)?.hostedId) : null),
+    [loaded, savedAs]
+  )
 
   const [kindFilter, setKindFilter] = useRouteEnumParam('tab', ARTIFACT_FILTERS, 'all')
 
@@ -266,6 +298,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     return {
       all: all.length,
+      page: all.filter(artifact => artifact.kind === 'page').length,
       image: all.filter(artifact => artifact.kind === 'image').length,
       file: all.filter(artifact => artifact.kind === 'file').length,
       link: all.filter(artifact => artifact.kind === 'link').length
@@ -316,7 +349,35 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // async title fetch re-rendered the page repeatedly. openArtifact is already
   // a useCallback; navigate is stable, so onOpenChat can be too.
   const openChat = useCallback((sessionId: string) => openSessionFromPicker(sessionId, navigate), [navigate])
-  const cellCtx: CellCtx = useMemo(() => ({ onOpen: openArtifact, onOpenChat: openChat }), [openArtifact, openChat])
+
+  // A page opens in its chat's side panel. Its versions register oldest first, as the chat's own cards
+  // would, so the panel's newest is the page's newest; then its tab is opened for that chat, and the chat.
+  const openPage = useCallback(
+    (artifact: ArtifactRecord) => {
+      const page = artifact.page
+      let opened = null
+
+      for (const version of page?.versions ?? []) {
+        opened = upsertArtifact(artifact.sessionId, page!.detection, version.content) ?? opened
+      }
+
+      if (opened) {
+        selectArtifactVersion(opened.artifactId, opened.record.versions.length - 1)
+        openPreview(
+          { kind: 'artifact', label: opened.record.title, source: opened.artifactId, url: opened.artifactId },
+          artifact.sessionId
+        )
+      }
+
+      openChat(artifact.sessionId)
+    },
+    [openChat]
+  )
+
+  const cellCtx: CellCtx = useMemo(
+    () => ({ onOpen: openArtifact, onOpenChat: openChat, onOpenPage: openPage }),
+    [openArtifact, openChat, openPage]
+  )
 
   return (
     <PageSearchShell
@@ -344,6 +405,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       searchValue={query}
       tabs={[
         { id: 'all', label: a.tabAll, meta: artifacts ? counts.all : null },
+        { id: 'page', label: a.tabPages, meta: artifacts ? counts.page : null },
         { id: 'image', label: a.tabImages, meta: artifacts ? counts.image : null },
         { id: 'file', label: a.tabFiles, meta: artifacts ? counts.file : null },
         { id: 'link', label: a.tabLinks, meta: artifacts ? counts.link : null }
@@ -589,15 +651,18 @@ function ArtifactCellAction({
 
 const PrimaryCell = memo(function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const isLink = artifact.kind === 'link'
+  const isPage = artifact.kind === 'page'
   const brand = isLink ? resolveBrandIcon(shortHostLabel(artifact.href)) : null
-  const Icon = brand ?? (isLink ? Link2 : FileText)
-  const fetchedTitle = useLinkTitle(isLink ? artifact.href : null)
-  const label = isLink ? fetchedTitle || urlSlugTitleLabel(artifact.href) : artifact.label
+  const Icon = brand ?? (isLink ? Link2 : isPage ? AppWindow : FileText)
+  // A hosted artifact's link carries its own name (a fetch would only reach a sign-in page); only other
+  // links fetch a page title.
+  const fetchedTitle = useLinkTitle(isLink && !artifact.title && !artifact.hostedId ? artifact.href : null)
+  const label = isLink ? artifact.title || fetchedTitle || urlSlugTitleLabel(artifact.href) : artifact.label
 
   return (
     <ArtifactCellAction
       href={isLink ? artifact.href : undefined}
-      onClick={isLink ? undefined : () => void ctx.onOpen(artifact)}
+      onClick={isLink ? undefined : isPage ? () => ctx.onOpenPage(artifact) : () => void ctx.onOpen(artifact)}
       title={label}
     >
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center self-start rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">
@@ -611,8 +676,40 @@ const PrimaryCell = memo(function PrimaryCell({ artifact, ctx }: { artifact: Art
   )
 })
 
+/** Who can see a page: "Only you can see it" until it is saved and shared; once saved, its link copies. */
+function PageAudienceCell({ page }: { page: ArtifactPage }) {
+  const { t } = useI18n()
+  const savedAs = usePageSavedAs()
+  const saved = savedAs(page)
+  const audience = useLocalArtifactAudience(saved)
+
+  return (
+    <div className="group/location flex min-w-0 items-center gap-1.5">
+      <div className="min-w-0 flex-1 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        {audience}
+      </div>
+      {saved && (
+        <CopyButton
+          appearance="icon"
+          buttonSize="icon-xs"
+          className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/location:opacity-100"
+          iconClassName="size-3.5"
+          label={t.artifacts.copyUrl}
+          text={saved.viewerUrl}
+          title={t.artifacts.copyUrl}
+        />
+      )}
+    </div>
+  )
+}
+
 const LocationCell = memo(function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const { t } = useI18n()
+
+  if (artifact.page) {
+    return <PageAudienceCell page={artifact.page} />
+  }
+
   const isLink = artifact.kind === 'link'
   const value = isLink ? hostPathLabel(artifact.value) : artifact.value
   const copyLabel = isLink ? t.artifacts.copyUrl : t.artifacts.copyPath
@@ -668,7 +765,13 @@ const ARTIFACT_COLUMNS: readonly ArtifactColumn[] = [
     Cell: LocationCell,
     bodyClassName: 'px-2.5 py-1.5',
     header: (filter, a) =>
-      filter === 'link' ? a.colLocationLink : filter === 'file' ? a.colLocationFile : a.colLocationDefault,
+      filter === 'link'
+        ? a.colLocationLink
+        : filter === 'file'
+          ? a.colLocationFile
+          : filter === 'page'
+            ? a.colLocationPage
+            : a.colLocationDefault,
     id: 'location',
     width: filter => (filter === 'link' ? 'w-[30%]' : 'w-[41%]')
   },

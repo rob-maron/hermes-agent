@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 349
+   "undecided": 353
   },
   "rpc": {
    "authority": 112,
@@ -112,6 +112,8 @@
   {"current_path": "hermes_cli.web_routers.actions:check_hermes_update", "decision": "undecided", "handler": "GET /api/hermes/update/check", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:get_update_receipt", "decision": "undecided", "handler": "GET /api/hermes/update/receipt", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_host_identity", "decision": "undecided", "handler": "GET /api/host/identity", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.hosted_artifacts:hosted_artifact_sharing", "decision": "undecided", "handler": "GET /api/hosted-artifacts/sharing", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.hosted_artifacts:hosted_artifacts_status", "decision": "undecided", "handler": "GET /api/hosted-artifacts/status", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_learning_graph", "decision": "undecided", "handler": "GET /api/learning/graph", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:get_learning_node", "decision": "undecided", "handler": "GET /api/learning/node", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.local_models:local_models_catalog", "decision": "undecided", "handler": "GET /api/local-models/catalog", "kind": "http", "ref": ""},
@@ -265,6 +267,8 @@
   {"current_path": "hermes_cli.web_routers.git:git_worktree_remove_route", "decision": "undecided", "handler": "POST /api/git/worktree/remove", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.status:post_health_retirement", "decision": "undecided", "handler": "POST /api/health/retirement", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.actions:update_hermes", "decision": "undecided", "handler": "POST /api/hermes/update", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.hosted_artifacts:publish_hosted_artifact", "decision": "undecided", "handler": "POST /api/hosted-artifacts/publish", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.hosted_artifacts:share_hosted_artifact", "decision": "undecided", "handler": "POST /api/hosted-artifacts/share", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.local_models:local_models_activate", "decision": "undecided", "handler": "POST /api/local-models/activate", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.local_models:local_models_download", "decision": "undecided", "handler": "POST /api/local-models/download", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.local_models:local_models_download_browsed", "decision": "undecided", "handler": "POST /api/local-models/download-browsed", "kind": "http", "ref": ""},

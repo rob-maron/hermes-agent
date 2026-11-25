@@ -1,4 +1,5 @@
-"""A chat reply carries the viewer link of every hosted artifact its turn made, changed or showed."""
+"""A chat reply carries the viewer link of every hosted artifact its turn made, changed or showed, and
+the share page of every share Hermes handed to the user."""
 
 from __future__ import annotations
 
@@ -46,6 +47,20 @@ def test_missing_links_are_appended_once_each_in_order():
     reply = append_viewer_links("Done.", turn, 0)
     assert reply == f"Done.\n\nArtifact: {VIEWER}\nArtifact \u201cDeck\u201d: {OTHER}"
     assert "secret-ticket" not in reply
+
+
+SHARE_PAGE = f"{VIEWER}?share=1&invite=dana%40example.com"
+HANDED_OFF = _call("c5", "artifact_share", _result(
+    {"id": "01hx", "title": "Q3 plan", "viewer_url": VIEWER, "share_url": SHARE_PAGE,
+     "invites_to_confirm": ["dana@example.com"], "access_changed": False, "message": "NOT changed"}))
+
+
+def test_a_handed_off_share_carries_its_share_page():
+    reply = append_viewer_links("Click Share to send it.", [*HANDED_OFF], 0)
+    assert reply == ("Click Share to send it.\n\nShare \u201cQ3 plan\u201d with dana@example.com (you confirm on "
+                     f"the share page): {SHARE_PAGE}")
+    # Already in the reply: not repeated.
+    assert append_viewer_links(f"Open {SHARE_PAGE}", [*HANDED_OFF], 0) == f"Open {SHARE_PAGE}"
 
 
 def test_a_link_the_model_already_gave_is_not_repeated():
@@ -101,3 +116,22 @@ def test_a_chat_turn_delivers_the_viewer_link(platform):
 def test_a_local_viewer_turn_leaves_the_reply_alone():
     # Local viewers (CLI, Ink TUI, Desktop) show the link on the tool call itself.
     assert _run_turn(Platform.LOCAL)["final_response"] == _ArtifactAgent.final
+
+
+class _SealRecorder:
+    stream_deltas_enabled = True
+
+    def __init__(self):
+        self.sealed = []
+
+    def finish(self, final_text=None):
+        self.sealed.append(final_text)
+
+
+def test_a_streamed_chat_reply_is_sealed_with_the_viewer_link(monkeypatch):
+    # The stream consumer seals the text it is handed; a link added after the seal no longer matches the
+    # streamed message, and the gateway then edits it or sends the whole reply a second time.
+    consumer = _SealRecorder()
+    monkeypatch.setattr(TurnRunner, "_setup_stream_consumer", lambda self, _key: (consumer, None, None, False))
+    final = _run_turn(Platform.TELEGRAM)["final_response"]
+    assert final.endswith(f"Artifact: {VIEWER}") and consumer.sealed == [final]

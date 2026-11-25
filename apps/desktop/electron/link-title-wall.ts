@@ -19,10 +19,11 @@
 const TITLE_MAX_CHARS = 240
 
 // Strips known error/captcha titles (e.g. "GetYourGuide – Error", "Just a
-// moment...") so they don't get cached as the resolved title. An error title is
-// '' here, which is also the one case the renderer tier is still allowed to try.
+// moment...", "Security Checkpoint") so they don't get cached as the resolved
+// title. An error title is '' here, which is also the one case the renderer tier
+// is still allowed to try.
 const TITLE_ERROR_RE =
-  /\b(access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
+  /\b(access denied|attention required|captcha|error|forbidden|just a moment|request blocked|security checkpoint|too many requests)\b/i
 
 function usableTitle(value: string): string {
   return value && !TITLE_ERROR_RE.test(value) ? value : ''

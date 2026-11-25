@@ -18,7 +18,7 @@ const PAYLOAD = { content_url: CONTENT_URL, id: ID, title: 'Chart', version: 3, 
 const EXPECTED = { contentUrl: CONTENT_URL, id: ID, title: 'Chart', version: 3, viewerUrl: VIEWER_URL }
 
 describe('hosted artifact tool names', () => {
-  it('renders create, update and show; list, get and share stay activity rows', () => {
+  it('renders create, update and show; list, get and share are not artifact cards', () => {
     for (const tool of ['artifact_create', 'artifact_update', 'artifact_show']) {
       expect(isHostedArtifactCardTool(`mcp__hermes_artifacts__${tool}`)).toBe(true)
     }

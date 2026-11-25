@@ -3,7 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
-import { artifactImageSrc, collectArtifactsForSession, loadArtifactsForSessions } from './artifact-utils'
+import {
+  artifactImageSrc,
+  type ArtifactRecord,
+  collectArtifactsForSession,
+  loadArtifactsForSessions,
+  withoutSavedPageLinks
+} from './artifact-utils'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -718,5 +724,166 @@ describe('loadArtifactsForSessions', () => {
     expect(result.failures).toHaveLength(1)
     expect(result.failures[0]?.session.id).toBe('session-2')
     expect(String(result.failures[0]?.error)).toContain('transcript page exceeds the Desktop safe-load limit')
+  })
+})
+
+describe('collectArtifactsForSession hosted artifact links', () => {
+  const ID = '7q6wp1136f6eh3r5rkeh0p85f7'
+  const VIEWER = `https://portal.example.com/a/${ID}`
+  const TICKET = `https://${ID}.content.example.com/__av?t=abc.def`
+
+  // The stored tool row: the MCP result envelope inside the untrusted-result wrapper, and the call's args.
+  const created: SessionMessage = {
+    args: { files: [{ content: '<p>orb</p>', path: 'index.html' }], title: 'Breathing Orb' },
+    content: `<untrusted_tool_result source="mcp__hermes_artifacts__artifact_create">\n${JSON.stringify({
+      result: JSON.stringify({ content_url: TICKET, id: ID, version: 1, viewer_url: VIEWER })
+    })}\n</untrusted_tool_result>`,
+    role: 'tool',
+    timestamp: 1_781_774_001,
+    tool_name: 'mcp__hermes_artifacts__artifact_create'
+  }
+
+  it("names an artifact's viewer link after the artifact and leaves its ticket link out", () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      created,
+      {
+        content: `I made "Breathing Orb": ${VIEWER}\n\nOpen it here too: ${TICKET}`,
+        role: 'assistant',
+        timestamp: 1_781_774_002
+      }
+    ])
+
+    const links = artifacts.filter(artifact => artifact.kind === 'link')
+    expect(links).toHaveLength(1)
+    expect(links[0]).toMatchObject({ href: VIEWER, title: 'Breathing Orb' })
+    expect(artifacts.some(artifact => artifact.value.includes('/__av'))).toBe(false)
+  })
+
+  it('keeps the name across transcript pages, and names nothing it did not see made', async () => {
+    const pages = [[created], [{ content: `Here: ${VIEWER}`, role: 'assistant', timestamp: 1_781_774_003 }]]
+
+    const { artifacts } = await loadArtifactsForSessions([makeSession()], async (_session, { offset }) => ({
+      messages: (pages[offset] ?? []) as SessionMessage[],
+      pagination: { limit: 1, offset, returned: (pages[offset] ?? []).length }
+    }))
+
+    expect(artifacts.find(artifact => artifact.kind === 'link')).toMatchObject({ href: VIEWER, title: 'Breathing Orb' })
+
+    const other = collectArtifactsForSession(makeSession(), [
+      { content: `Unrelated: https://portal.example.com/a/${'z'.repeat(26)}`, role: 'assistant', timestamp: 1 }
+    ])
+
+    expect(other[0]?.title).toBeUndefined()
+  })
+
+  it('reads the name from a call made through the Tool Search bridge, and follows a rename', () => {
+    const call = (id: string, name: string, args: object) => ({
+      id,
+      type: 'function',
+      function: { arguments: JSON.stringify({ calls: [{ arguments: args, name }] }), name: 'tool_call' }
+    })
+
+    const result = (callId: string, name: string, version: number): SessionMessage => ({
+      content: `<untrusted_tool_result source="${name}">\n${JSON.stringify({
+        result: JSON.stringify({ content_url: TICKET, id: ID, version, viewer_url: VIEWER })
+      })}\n</untrusted_tool_result>`,
+      role: 'tool',
+      timestamp: 1_781_774_000 + version,
+      tool_call_id: callId,
+      tool_name: name
+    })
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: '',
+        role: 'assistant',
+        timestamp: 1,
+        tool_calls: [call('c1', 'mcp__hermes_artifacts__artifact_create', { files: [], title: 'Breathing Orb' })]
+      },
+      result('c1', 'mcp__hermes_artifacts__artifact_create', 1),
+      { content: `Here it is: ${VIEWER}`, role: 'assistant', timestamp: 2 },
+      {
+        content: '',
+        role: 'assistant',
+        timestamp: 3,
+        tool_calls: [
+          call('c2', 'mcp__hermes_artifacts__artifact_update', { base_version: 1, id: ID, title: 'Bouncing Ball' })
+        ]
+      },
+      result('c2', 'mcp__hermes_artifacts__artifact_update', 2)
+    ])
+
+    const links = artifacts.filter(artifact => artifact.kind === 'link')
+    expect(links).toHaveLength(1)
+    expect(links[0]).toMatchObject({ hostedId: ID, href: VIEWER, title: 'Bouncing Ball' })
+  })
+})
+
+describe('collectArtifactsForSession pages', () => {
+  const page = (title: string, body: string) =>
+    `<!doctype html>\n<html><head><title>${title}</title></head>\n<body>\n<h1>${body}</h1>\n<p>A page long enough to count as a document rather than a snippet, as the card detection requires.</p>\n</body></html>`
+
+  const reply = (text: string, timestamp: number): SessionMessage => ({ content: text, role: 'assistant', timestamp })
+  const fenced = (html: string) => `Here it is:\n\n\`\`\`html\n${html}\n\`\`\`\n\nThe page is private to you.`
+
+  it('lists each page a chat made once, at its newest version, with every version in order', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 's1', title: 'Countdown chat' }), [
+      reply(fenced(page('New Year Countdown', 'one')), 1_781_774_001),
+      reply(fenced(page('New Year Countdown', 'two')), 1_781_774_002),
+      reply('Small code stays inline:\n\n```js\nconst x = 1\n```', 1_781_774_003)
+    ])
+
+    const pages = artifacts.filter(artifact => artifact.kind === 'page')
+    expect(pages).toHaveLength(1)
+    expect(pages[0]).toMatchObject({ label: 'New Year Countdown', sessionId: 's1', sessionTitle: 'Countdown chat' })
+    expect(pages[0]?.page?.localId).toBe('s1:html:html:new-year-countdown')
+    expect(pages[0]?.page?.versions.map(version => version.content)).toEqual([
+      page('New Year Countdown', 'one'),
+      page('New Year Countdown', 'two')
+    ])
+  })
+
+  it('keeps version order across transcript pages', async () => {
+    const pages = [
+      [reply(fenced(page('Report', 'one')), 1)],
+      [reply(fenced(page('Report', 'two')), 2)],
+      [reply(fenced(page('Report', 'one')), 3)]
+    ]
+
+    const { artifacts } = await loadArtifactsForSessions([makeSession()], async (_session, { offset }) => ({
+      messages: (pages[offset] ?? []) as SessionMessage[],
+      pagination: { limit: 1, offset, returned: (pages[offset] ?? []).length }
+    }))
+
+    const found = artifacts.filter(artifact => artifact.kind === 'page')
+    expect(found).toHaveLength(1)
+    // A repeat of an older version is not a newer one (the registry dedupes on content).
+    expect(found[0]?.page?.versions.map(version => version.content)).toEqual([
+      page('Report', 'one'),
+      page('Report', 'two')
+    ])
+  })
+
+  it("drops a saved page's own link row, and only that one", () => {
+    const pageRow = collectArtifactsForSession(makeSession(), [reply(fenced(page('Report', 'one')), 1)])[0]!
+
+    const link = (hostedId: string): ArtifactRecord => ({
+      href: `https://portal.example.com/a/${hostedId}`,
+      hostedId,
+      id: `session-1:hosted:${hostedId}`,
+      kind: 'link',
+      label: hostedId,
+      sessionId: 'session-1',
+      sessionTitle: 'Session',
+      timestamp: 2,
+      value: `https://portal.example.com/a/${hostedId}`
+    })
+
+    const saved = 'a'.repeat(26)
+    const other = 'b'.repeat(26)
+
+    const shown = withoutSavedPageLinks([pageRow, link(saved), link(other)], () => saved)
+    expect(shown.map(artifact => artifact.id)).toEqual([pageRow.id, link(other).id])
+    expect(withoutSavedPageLinks([pageRow, link(saved)], () => undefined)).toHaveLength(2)
   })
 })

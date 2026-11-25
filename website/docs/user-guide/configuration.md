@@ -1031,11 +1031,16 @@ Hermes also flags **provider-side elision**: when an MCP or web tool result embe
 
 ## Hosted Artifacts
 
-When you are signed in to Nous and your account has artifacts access and paid access, new
-sessions get the `hermes-artifacts` MCP server: the agent can publish HTML, SVG, Markdown, code
+When you are signed in to Nous and your account has artifacts access, new sessions get the
+`hermes-artifacts` MCP server: the agent can publish HTML, SVG, Markdown, code
 and images as versioned artifacts and hand you a viewer link (the desktop app renders them
 inline). The server joins a session only when the session starts; a session that started
 without it never gains it mid-conversation.
+
+Artifacts are private until you share them. Ask the agent to share one and it can open it to your
+organisation, teammates or groups; it asks first, and for someone outside your organisation it
+gives you a link to confirm and send the invite yourself. Each version records whether a session
+or a scheduled job made it, so the viewer can show "Updated by the scheduled job …".
 
 ```yaml
 artifacts:

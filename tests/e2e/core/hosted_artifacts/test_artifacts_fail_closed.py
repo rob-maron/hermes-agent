@@ -41,7 +41,8 @@ CASES: dict[str, tuple[dict[str, Any], dict[str, Any], bool, bool]] = {
     "entitled": (account_body(), {}, True, True),
     "artifacts-access-false": (account_body(artifacts_access=False), {}, True, False),
     "artifacts-access-absent": (account_body(artifacts_access=None), {}, True, False),
-    "paid-access-false": (account_body(paid_access=False), {}, True, False),
+    # artifacts_access alone decides; paid_access is not read.
+    "unpaid-account-attaches": (account_body(paid_access=False), {}, True, True),
     "artifacts-disabled": (account_body(), {"enabled": False}, True, False),
     "portal-down": (account_body(), {}, False, False),
 }

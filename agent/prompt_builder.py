@@ -261,11 +261,38 @@ SESSION_SEARCH_GUIDANCE = (
 SKILLS_GUIDANCE = "When you work out a non-trivial workflow, record it with skill_manage for future reuse."
 
 # Hosted artifacts (the artifact_* tools): only sessions whose tool list has them get this, and the
-# surface sentence is chosen once per session from its platform, so the prompt stays byte-stable.
+# surface sentences are chosen once per session from its platform, so the prompt stays byte-stable.
+# Surfaces that can't show a local page publish what's worth keeping; the desktop keeps pages local, so
+# the user sees one first and shares it from its card when they choose to.
+HOSTED_ARTIFACTS_PUBLISH_GUIDANCE = (
+    "For anything the user may want to keep, revisit or share, publish it with artifact_create instead of "
+    "::preview; use ::preview only for quick throwaway visuals. "
+)
+HOSTED_ARTIFACTS_DESKTOP_GUIDANCE = (
+    "For a page the user may want to keep or share (anything they call a page, site, app, game, report or "
+    "mockup), write the complete HTML document in a ```html block in your reply instead of a file with "
+    "::preview, which stays for widgets that live in the chat, like charts: the app shows the block as a "
+    "card that opens in the side panel, and the page stays on their computer until they press Share on it, "
+    "which saves it privately to their Nous account and lets them choose who can see it. The first time you "
+    "make such a page in a chat, end your reply with one short sentence saying it's private to them and "
+    "that Share on its card lets them send it to others. Don't call artifact_create or artifact_update "
+    "unless the user asks you to publish or upload a page, or to change one that is already published; "
+    "when they ask you to share a page you made here, tell them to press Share on its card. "
+)
 HOSTED_ARTIFACTS_GUIDANCE = (
     "To change a hosted artifact, call artifact_update with base_version set to the version you last saw; "
     "on a stale_base error, re-read it with artifact_get and retry from head_version. Give the user an "
-    "artifact's viewer_url, never its content_url (a short-lived ticket for the embedded view)."
+    "artifact's viewer_url, never its content_url (a short-lived ticket for the embedded view). "
+    "Hermes shows the user an approval card for every upload (artifact_create, and each new version with "
+    "artifact_update), so don't ask for it in chat first; if they deny it, nothing was sent: don't retry or "
+    "ask again unless they bring it up. In a scheduled job an upload runs only if the user chose \"Always\" "
+    "on that card, so when you set up a job that publishes artifacts, tell them that. "
+    "Artifacts are private by default, and only the user changes who can see one, on its share page. When "
+    "they ask you to share one, call artifact_share with what they asked for (org, members, groups or "
+    "emails): Hermes doesn't apply it but shows them a Share button that opens a Share panel with what "
+    "they asked for filled in, so tell them to click it and finish there; there is no need to confirm in chat "
+    "first. If it holds personal data, point that out and offer to remove personal data first. Taking "
+    "access away (making it private again) is applied directly."
 )
 HOSTED_ARTIFACTS_SURFACE_HINTS = {
     "desktop": "This app renders artifacts inline when you create, update or show one.",
@@ -277,8 +304,10 @@ HOSTED_ARTIFACTS_LINK_HINT = "This chat cannot render artifacts inline: share th
 
 def hosted_artifacts_guidance(platform: str | None) -> str:
     """The artifact tools' guidance for a session on *platform* (``desktop``, ``cli``, ``tui`` or a chat)."""
-    surface = HOSTED_ARTIFACTS_SURFACE_HINTS.get((platform or "").lower().strip(), HOSTED_ARTIFACTS_LINK_HINT)
-    return f"{surface} {HOSTED_ARTIFACTS_GUIDANCE}"
+    name = (platform or "").lower().strip()
+    surface = HOSTED_ARTIFACTS_SURFACE_HINTS.get(name, HOSTED_ARTIFACTS_LINK_HINT)
+    first = HOSTED_ARTIFACTS_DESKTOP_GUIDANCE if name == "desktop" else HOSTED_ARTIFACTS_PUBLISH_GUIDANCE
+    return f"{surface} {first}{HOSTED_ARTIFACTS_GUIDANCE}"
 
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"

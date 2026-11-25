@@ -814,6 +814,7 @@ from hermes_cli.web_routers import (
     gateway_connections_reach as _gateway_connections_reach_routes,
     webapp_relay_proxy as _webapp_relay_proxy_routes,
     peer as _peer_routes,
+    hosted_artifacts as _hosted_artifacts_routes,
 )
 
 import hermes_cli.web_routers.desktop_plugins as _desktop_plugin_routes
@@ -828,6 +829,7 @@ app.include_router(_desktop_plugin_routes.router, dependencies=[_Depends(_route_
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
+app.include_router(_hosted_artifacts_routes.router)
 app.include_router(_actions_routes.router)
 app.include_router(_audio_routes.router)
 app.include_router(_display_routes.router)

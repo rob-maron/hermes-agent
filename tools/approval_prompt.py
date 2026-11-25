@@ -296,7 +296,8 @@ def _remembered_consent(session_key: str, choice, remember_key: str | None, unre
 def request_elicitation_consent(message: str, description: str, *,
                                 timeout_seconds: int | None = None,
                                 surface: str = "mcp-elicitation", title: str = "Confirm this action?",
-                                remember_key: str | None = None) -> str:
+                                remember_key: str | None = None, kind: str | None = None,
+                                summary: dict | None = None) -> str:
     """Route an MCP elicitation request to the surface owning the active session:
     gateway sessions through ``_await_gateway_decision``, CLI/TUI through
     ``prompt_dangerous_approval``. Always fails closed: a missing notify_cb in a
@@ -306,7 +307,12 @@ def request_elicitation_consent(message: str, description: str, *,
 
     Without *remember_key* the consent covers one call, so every surface offers only
     once/deny. With it, the session and always choices are offered and recorded under
-    that approval key; the caller checks ``tools.approval.is_approved`` before asking."""
+    that approval key; the caller checks ``tools.approval.is_approved`` before asking.
+
+    *kind* names a consent a client draws as its own card (``hosted_artifact_create`` /
+    ``hosted_artifact_update``: an upload, not a command). With it, *title*, *kind* and
+    *summary* (the card's facts as data, for a client that says them in the user's language)
+    travel with the gateway request; without it the request is unchanged."""
     from tools import approval as _a
     try:
         session_key = _ctx.get_current_session_key()
@@ -339,7 +345,9 @@ def request_elicitation_consent(message: str, description: str, *,
                 session_key, notify_cb, {"command": message, "description": description,
                                          "pattern_key": "mcp_elicitation",
                                          "pattern_keys": ["mcp_elicitation"],
-                                         "allow_session": scoped, "allow_permanent": scoped}, surface=surface)
+                                         "allow_session": scoped, "allow_permanent": scoped,
+                                         **({"title": title, "kind": kind, "summary": summary or {}}
+                                            if kind else {})}, surface=surface)
         except Exception as exc:
             logger.error("Elicitation gateway dispatch failed: %s", exc, exc_info=True)
             return "decline"

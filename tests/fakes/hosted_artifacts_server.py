@@ -7,8 +7,12 @@ It implements the client-facing wire of the hosted artifacts plane: stateless St
 ``ui://hermes/artifact-viewer`` resource that ``artifact_show`` points at through
 ``_meta.ui.resourceUri``. Inputs are checked like the hosted server checks them: optional fields
 are non-nullable, titles and edit lists non-empty, base64 must decode, files and versions have size
-caps, shares need a known scope and fitting subjects, unknown versions are not_found, and the list
-is paginated. State lives in memory for the life of the process.
+caps, share lists must fit (members/groups ids, outside emails), unknown versions are not_found, and
+the list is paginated. Like the hosted server, ``artifact_share`` never invites an outside email: the
+addresses not yet invited come back as ``invite_url`` (the viewer link that opens the Portal's share
+sheet with them filled in) for a person to confirm. Each ``tools/call`` request's
+``_meta["io.nousresearch/hermes"]`` (the client's provenance) is kept per created or updated
+version (:meth:`Store.sources`). State lives in memory for the life of the process.
 
 Run it as a subprocess (``python tests/fakes/hosted_artifacts_server.py``) with:
 
@@ -33,7 +37,10 @@ import sys
 import threading
 from typing import Any, Callable, Optional
 
-from pydantic import StrictInt
+from urllib.parse import urlencode
+
+from mcp.server.mcpserver import Context  # module level: the SDK resolves tool annotations here
+from pydantic import StrictBool, StrictInt
 
 MCP_PATH = "/v1/artifacts/mcp"
 VIEWER_URI = "ui://hermes/artifact-viewer"
@@ -59,7 +66,14 @@ MAX_SUBJECTS = 200
 MAX_SUBJECT_CHARS = 128
 MAX_CURSOR_CHARS = 256
 LIST_PAGE_SIZE = 50
-SHARE_SCOPES = ("CREATOR_ONLY", "ORG", "MEMBERS", "GROUPS")
+MAX_INVITES = 50
+MAX_EMAIL_CHARS = 254
+HERMES_META_KEY = "io.nousresearch/hermes"
+_EMAIL_RE = re.compile(r"^[^\s@,;<>\"]+@[^\s@,;<>\"]+\.[^\s@,;<>\"]+$")
+
+
+def _private_share() -> dict:
+    return {"org": False, "members": [], "groups": [], "pin": "latest", "invites": []}
 
 
 class Refused(Exception):
@@ -154,13 +168,13 @@ class Store:
         except Refused as refused:
             return refused.body
 
-    def create(self, title: Any, files: Any) -> dict:
+    def create(self, title: Any, files: Any, source: Any = None) -> dict:
         def run() -> dict:
             checked = (_title(title), _files(files))
             artifact_id = _artifact_id()
             with self._lock:
                 item = {"title": checked[0], "versions": [checked[1]],
-                        "share": {"scope": "CREATOR_ONLY", "subjects": [], "pin": "latest"}}
+                        "share": _private_share(), "sources": [source]}
                 self._touch(item)
                 self._items[artifact_id] = item
             return {"id": artifact_id, "version": 1, **self._urls(artifact_id, 1)}
@@ -170,8 +184,13 @@ class Store:
         with self._lock:
             return self._items.get(artifact_id)
 
+    def sources(self, artifact_id: str) -> list[Any]:
+        """The provenance ``_meta`` each version was written with (None: none sent), oldest first."""
+        with self._lock:
+            return list(self._items[artifact_id]["sources"])
+
     def update(self, artifact_id: Any, base_version: Any, title: Any = None,
-               edits: Any = None, files: Any = None) -> dict:
+               edits: Any = None, files: Any = None, source: Any = None) -> dict:
         def run() -> dict:
             with self._lock:
                 item = self._found(artifact_id)
@@ -186,6 +205,7 @@ class Store:
                 new_title = item["title"] if title is None else _title(title)
                 new_files = _files(files) if files is not None else _apply_edits(item["versions"][-1], edits)
                 item["versions"].append(new_files)
+                item["sources"].append(source)
                 item["title"] = new_title
                 self._touch(item)
                 version = len(item["versions"])
@@ -220,25 +240,48 @@ class Store:
                     "share": item["share"], "viewer_url": self._urls(artifact_id, chosen)["viewer_url"]}
         return self._answer(run)
 
-    def share(self, artifact_id: Any, scope: Any, subjects: Any = None, pin: Any = None) -> dict:
+    def share(self, artifact_id: Any, org: Any = None, members: Any = None, groups: Any = None,
+              emails: Any = None, pin: Any = None) -> dict:
+        """Merge into the access list (omitted fields keep their value). Outside emails are never invited
+        here: ones already invited stay, the rest come back as ``invite_url`` for a person to confirm."""
         def run() -> dict:
             with self._lock:
                 item = self._found(artifact_id)
-                if scope not in SHARE_SCOPES:
-                    raise _invalid("scope must be CREATOR_ONLY, ORG, MEMBERS or GROUPS")
-                raw = [] if subjects is None else subjects
-                if (not isinstance(raw, list) or len(raw) > MAX_SUBJECTS
-                        or not all(isinstance(x, str) and 0 < len(x) <= MAX_SUBJECT_CHARS for x in raw)):
-                    raise _invalid(f"subjects must be at most {MAX_SUBJECTS} non-empty strings")
-                if scope in ("CREATOR_ONLY", "ORG") and raw:
-                    raise _invalid(f"subjects must be empty for {scope}")
-                chosen = "latest" if pin is None else pin
+                current = item["share"]
+                if org is not None and not isinstance(org, bool):
+                    raise _invalid("org must be a boolean")
+                lists = {name: _ids(name, value) for name, value in (("members", members), ("groups", groups))}
+                wanted = _emails(emails)
+                chosen = current["pin"] if pin is None else pin
                 if chosen != "latest" and (isinstance(chosen, bool) or not isinstance(chosen, int)
                                            or not 1 <= chosen <= len(item["versions"])):
                     raise _invalid('pin must be "latest" or a retained version number')
-                item["share"] = {"scope": scope, "subjects": sorted(set(raw)), "pin": chosen}
-                return dict(item["share"])
+                have = [i["email"] for i in current["invites"]]
+                kept = have if wanted is None else [e for e in wanted if e in have]
+                pending = [] if wanted is None else [e for e in wanted if e not in have]
+                if len(kept) + len(pending) > MAX_INVITES:
+                    raise _invalid(f"at most {MAX_INVITES} people outside the org per artifact")
+                item["share"] = {
+                    "org": current["org"] if org is None else org,
+                    "members": current["members"] if lists["members"] is None else lists["members"],
+                    "groups": current["groups"] if lists["groups"] is None else lists["groups"],
+                    "pin": chosen,
+                    "invites": [i for i in current["invites"] if i["email"] in kept],
+                }
+                body = {**item["share"], "invites": [dict(i) for i in item["share"]["invites"]]}
+            if pending:
+                query = urlencode({"share": "1", "invite": ",".join(pending)})
+                body.update(invites_need_confirmation=pending,
+                            invite_url=f"{self._urls(artifact_id, 1)['viewer_url']}?{query}")
+            return body
         return self._answer(run)
+
+    def invite(self, artifact_id: str, email: str) -> None:
+        """Test seam for the Portal's side: record *email* as an invite already sent."""
+        with self._lock:
+            self._items[artifact_id]["share"]["invites"].append(
+                {"email": email, "status": "pending", "invited_at": "1970-01-01T00:00:00Z",
+                 "expires_at": "1970-01-31T00:00:00Z", "accepted_at": None})
 
     def listing(self, cursor: Any = None) -> dict:
         """The caller's artifacts, most recently changed first, ``LIST_PAGE_SIZE`` per page."""
@@ -254,11 +297,35 @@ class Store:
                 ordered = sorted(self._items.items(), key=lambda kv: kv[1]["changed"], reverse=True)
                 page = [{"id": k, "title": v["title"], "kind": "html", "head_version": len(v["versions"]),
                          "updated_at": "1970-01-01T00:00:00Z",
-                         "share": {"scope": v["share"]["scope"], "pin": v["share"]["pin"]}}
+                         "share": {"org": v["share"]["org"], "members": len(v["share"]["members"]),
+                                   "groups": len(v["share"]["groups"]),
+                                   "invites": len(v["share"]["invites"]), "pin": v["share"]["pin"]}}
                         for k, v in ordered[start:start + LIST_PAGE_SIZE]]
                 more = start + LIST_PAGE_SIZE < len(ordered)
             return {"items": page, "next_cursor": str(start + LIST_PAGE_SIZE) if more else None}
         return self._answer(run)
+
+
+def _ids(name: str, value: Any) -> Optional[list[str]]:
+    """A members/groups list (None: not given), de-duplicated in order."""
+    if value is None:
+        return None
+    if (not isinstance(value, list) or len(value) > MAX_SUBJECTS
+            or not all(isinstance(x, str) and 0 < len(x) <= MAX_SUBJECT_CHARS for x in value)):
+        raise _invalid(f"{name} must be at most {MAX_SUBJECTS} non-empty strings of {MAX_SUBJECT_CHARS} chars")
+    return list(dict.fromkeys(value))
+
+
+def _emails(value: Any) -> Optional[list[str]]:
+    """The outside emails (None: not given), trimmed, lowercased and de-duplicated in order."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+        raise _invalid("emails must be an array of strings")
+    cleaned = [x.strip().lower() for x in value]
+    if any(len(x) > MAX_EMAIL_CHARS or not _EMAIL_RE.match(x) for x in cleaned):
+        raise _invalid("emails must be email addresses")
+    return list(dict.fromkeys(cleaned))
 
 
 def _apply_edits(files: list[dict], edits: Any) -> list[dict]:
@@ -287,16 +354,25 @@ def build_server(store: Store):
 
     # Optional parameters are typed without null, like the hosted server's input schemas: an omitted
     # one arrives as None, an explicit null is refused by argument validation.
-    @server.tool()
-    def artifact_create(title: str, files: list[dict]):
-        """Create an artifact from files ({path, content, encoding})."""
-        return result(store.create(title, files))
+    def provenance(ctx: Context) -> Any:
+        """The client's provenance from this request's ``_meta`` (a plain mapping), if it sent any. A direct
+        ``server.call_tool`` (in-process tests) has no request, so no provenance."""
+        try:
+            meta = ctx.request_context.meta
+        except ValueError:
+            return None
+        return (meta or {}).get(HERMES_META_KEY)
 
     @server.tool()
-    def artifact_update(id: str, base_version: StrictInt, title: str = None,  # noqa: RUF013 -- null is refused
-                        edits: list[dict] = None, files: list[dict] = None):  # noqa: RUF013
+    def artifact_create(title: str, files: list[dict], ctx: Context):
+        """Create an artifact from files ({path, content, encoding})."""
+        return result(store.create(title, files, provenance(ctx)))
+
+    @server.tool()
+    def artifact_update(ctx: Context, id: str, base_version: StrictInt, title: str = None,  # noqa: RUF013
+                        edits: list[dict] = None, files: list[dict] = None):  # noqa: RUF013 -- null is refused
         """New version from exact {path, old, new} edits or a full file set; base_version must be the head."""
-        return result(store.update(id, base_version, title, edits, files))
+        return result(store.update(id, base_version, title, edits, files, provenance(ctx)))
 
     @server.tool()
     def artifact_get(id: str, version: StrictInt = None):  # null is refused
@@ -309,10 +385,11 @@ def build_server(store: Store):
         return result(store.listing(cursor))
 
     @server.tool()
-    def artifact_share(id: str, scope: str, subjects: list[str] = None,  # noqa: RUF013 -- null is refused
+    def artifact_share(id: str, org: StrictBool = None, members: list[str] = None,  # noqa: RUF013
+                       groups: list[str] = None, emails: list[str] = None,  # noqa: RUF013 -- null is refused
                        pin: str | StrictInt = None):
-        """Replace the artifact's share."""
-        return result(store.share(id, scope, subjects, pin))
+        """Change who can view the artifact; outside emails come back as invite_url, never invited here."""
+        return result(store.share(id, org, members, groups, emails, pin))
 
     @server.tool(meta={"ui": {"resourceUri": VIEWER_URI}})
     def artifact_show(id: str, version: StrictInt = None):  # null is refused

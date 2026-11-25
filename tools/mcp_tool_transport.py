@@ -537,7 +537,7 @@ class MCPServerTransportMixin:
         to the managed hosted artifacts server."""
         if self._auth_type == "nous":
             from tools.hosted_artifacts import nous_bearer_auth
-            return nous_bearer_auth(url)
+            return nous_bearer_auth(url, self.name)
         if self._auth_type != "oauth":
             return None
         try:

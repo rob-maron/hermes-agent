@@ -1077,7 +1077,7 @@ def _publish_session_id(session_id: str) -> None:
 
 def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
     checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb):
-    agent.session_start = datetime.now()
+    agent.session_start = getattr(agent, "session_start", None) or datetime.now()  # init_agent sets it first
     agent.session_id = session_id or new_session_id(agent.session_start)
     _publish_session_id(agent.session_id)
 
@@ -2167,11 +2167,11 @@ def init_agent(
     _set_defaults(agent, _STREAM_STATE)
     _build_client(agent, api_key, base_url, fallback_model)
     _init_fallback_chain(agent, fallback_model)
+    agent.session_start = datetime.now()  # the id exists before the first tool load, which latches per session
+    agent.session_id = session_id = session_id or new_session_id(agent.session_start)  # (tools/hosted_artifacts.py)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
-    _init_session_state(
-        agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
-        checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
-    )
+    _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
+        checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb)
 
     # Load config once for memory, skills, and compression sections
     try:

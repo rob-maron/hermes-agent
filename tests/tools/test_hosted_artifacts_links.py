@@ -7,7 +7,7 @@ import json
 import pytest
 from mcp.types import CallToolResult, TextContent
 
-from tools.hosted_artifacts import ViewerLink, viewer_link
+from tools.hosted_artifacts import ShareLink, ViewerLink, viewer_link
 from tools.mcp_tool_handlers import _render_call_tool_result
 
 VIEWER = "https://portal.example.com/a/01hx"
@@ -105,3 +105,16 @@ def test_text_and_payload_shapes():
     assert ViewerLink(VIEWER).text() == f"Artifact: {VIEWER}"
     assert ViewerLink(VIEWER).as_payload() == {"url": VIEWER}
     assert ViewerLink(VIEWER, "Plan").as_payload() == {"url": VIEWER, "title": "Plan"}
+
+
+def test_link_lines_carry_no_markdown_from_a_title_or_an_address():
+    # A chat renders the reply as markdown: a title or address must not become a link or styling there.
+    title = "[Reset your password](https://evil.example) **now** `x` <https://evil.example> q3_plan"
+    line = ViewerLink(VIEWER, title).text()
+    assert line == (f"Artifact \u201cReset your password (https://evil.example) now x https://evil.example q3 plan\u201d: "
+                    f"{VIEWER}")
+    share = ShareLink(VIEWER, "~~T~~", ("first_last@x.example", "[x](https://evil.example)@a.example")).text()
+    assert share == ("Share \u201cT\u201d with first_last@x.example, x (https://evil.example)@a.example "
+                     f"(you confirm on the share page): {VIEWER}")
+    assert ViewerLink(VIEWER, "**").text() == f"Artifact: {VIEWER}"
+

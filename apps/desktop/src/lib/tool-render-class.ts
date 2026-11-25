@@ -8,7 +8,7 @@
  * rather than inside either one.
  */
 
-import { isHostedArtifactCardTool } from './hosted-artifacts'
+import { isHostedArtifactCardTool, isHostedArtifactShareTool } from './hosted-artifacts'
 
 const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
 
@@ -30,7 +30,8 @@ export function isFileEditTool(toolName: string): boolean {
 //   - `set_theme` shows a picker card while it waits for the user, then a one-line receipt.
 //   - `setup_beat` is the onboarding chat's card for one beat, then a one-line receipt.
 //   - The hosted artifacts server's create / update / show calls draw the
-//     artifact itself (isHostedArtifactCardTool).
+//     artifact itself (isHostedArtifactCardTool), and its share call draws the
+//     Share button the user must click (isHostedArtifactShareTool).
 //
 // Everything else is ephemeral activity — reads, searches, commands — which is
 // what a run summarizes and what the live ticker cycles through.
@@ -58,7 +59,8 @@ export function isCardTool(toolName: string): boolean {
     isCardToolName(toolName) ||
     toolName === CONNECTION_CARD_KEY ||
     isFileEditTool(toolName) ||
-    isHostedArtifactCardTool(toolName)
+    isHostedArtifactCardTool(toolName) ||
+    isHostedArtifactShareTool(toolName)
   )
 }
 

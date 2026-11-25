@@ -18,9 +18,12 @@ export function restorePendingApproval(response: SessionResumeResult, sessionId:
     choices: pending.choices,
     command: pending.command ?? '',
     description: pending.description ?? 'dangerous command',
+    kind: typeof pending.kind === 'string' ? pending.kind : undefined,
     requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
     sessionId,
-    smartDenied: pending.smart_denied === true
+    smartDenied: pending.smart_denied === true,
+    summary: pending.summary,
+    title: typeof pending.title === 'string' ? pending.title : undefined
   })
   void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
 

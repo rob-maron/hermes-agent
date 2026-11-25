@@ -87,6 +87,12 @@ export interface ApprovalRequest extends KeyedPrompt {
   choices?: string[]
   command: string
   description: string
+  // A consent the card draws as its own kind instead of a command (a hosted artifact upload:
+  // `hosted_artifact_create` / `hosted_artifact_update`), and the backend's title for it.
+  kind?: string
+  title?: string
+  /** An upload card's facts (counts, bytes, audience), for its sentence in the user's language. */
+  summary?: unknown
   requestId?: string
   serverRequestId?: string
   smartDenied?: boolean
@@ -101,6 +107,9 @@ interface PendingApprovalPayload {
   choices?: unknown
   command?: unknown
   description?: unknown
+  kind?: unknown
+  title?: unknown
+  summary?: unknown
   request_id?: unknown
   smart_denied?: boolean
 }
@@ -329,9 +338,12 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
           : undefined,
         command: typeof pending.command === 'string' ? pending.command : '',
         description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
+        kind: typeof pending.kind === 'string' ? pending.kind : undefined,
         requestId: pending.request_id,
         sessionId,
-        smartDenied: pending.smart_denied === true
+        smartDenied: pending.smart_denied === true,
+        summary: pending.summary,
+        title: typeof pending.title === 'string' ? pending.title : undefined
       })
     })
   )

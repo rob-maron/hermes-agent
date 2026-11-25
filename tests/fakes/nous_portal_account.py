@@ -1,7 +1,7 @@
 """A loopback stand-in for the Nous Portal account read (``GET /api/oauth/account``).
 
-The account body is configurable per test (``artifacts_access``, ``paid_service_access.paid_access``)
-and every request is recorded with its bearer. A token refresh (``POST /api/oauth/token``) is
+The account body is configurable per test (``artifacts_access``, ``paid_service_access.paid_access``;
+hosted artifacts read only the first) and every request is recorded with its bearer. A token refresh (``POST /api/oauth/token``) is
 answered ``400 invalid_grant`` and recorded too, so a test seeding a long-lived access token can
 assert that no refresh happened. Run it in-process with :class:`FakePortal` (a context manager);
 ``origin`` is the ``portal_base_url`` to seed into ``auth.json``.

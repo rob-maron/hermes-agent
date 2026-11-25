@@ -866,10 +866,11 @@ class CLIStreamMixin:
             print_inline_images(self, [path])
 
     def _print_artifact_link(self, function_name, result) -> None:
-        """A hosted artifact's viewer page after the call that made, changed or showed it. Plain text:
-        prompt_toolkit's printer drops OSC 8, and terminals link a bare URL themselves."""
-        from tools.hosted_artifacts import viewer_link
-        if link := viewer_link(function_name, result):
+        """A hosted artifact's viewer page after the call that made, changed or showed it, and the share
+        page of a share Hermes handed to the user. Plain text: prompt_toolkit's printer drops OSC 8, and
+        terminals link a bare URL themselves."""
+        from tools.hosted_artifacts import share_link, viewer_link
+        if link := viewer_link(function_name, result) or share_link(function_name, result):
             from cli import _DIM, _RST, _cprint
             _cprint(f"  {_DIM}\u2197{_RST} {link.text()}")
 
