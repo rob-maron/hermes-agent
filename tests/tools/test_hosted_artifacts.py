@@ -152,6 +152,37 @@ def test_decision_is_cached_per_profile_until_the_ttl(monkeypatch):
     assert len(calls) == 2
 
 
+def test_a_signed_out_answer_is_never_remembered_so_signing_in_takes_effect_at_once():
+    # The app asks as it starts, before anyone signs in: the first session after signing in, seconds
+    # later, must get the server rather than the remembered "not signed in".
+    import asyncio
+
+    config, clock = ha.ArtifactsConfig(base_url=BASE), [100.0]
+    root = {"artifacts": {"base_url": BASE}}
+    signed_out = SimpleNamespace(logged_in=False)
+
+    def ask(reader):
+        return ha.cached_decision(config, now=lambda: clock[0], account_reader=reader)
+
+    assert ask(lambda: signed_out).reason is ha.Reason.not_logged_in
+    assert ha.attached_server_names(root) == frozenset()
+    clock[0] += 1
+    assert ask(_account).attach and ha.attached_server_names(root) == {ha.SERVER_NAME}
+
+    # The same on the MCP loop, which otherwise reuses any remembered answer.
+    ha.reset_decisions()
+    assert not ask(lambda: signed_out).attach
+
+    async def on_loop():
+        return ask(_account)
+
+    assert asyncio.run(on_loop()).attach
+
+    # Signing out drops the server at the next read.
+    clock[0] += ha.DECISION_TTL_SECONDS + 1
+    assert not ask(lambda: signed_out).attach and ha.attached_server_names(root) == frozenset()
+
+
 def test_attach_to_adds_and_replaces_only_when_entitled(monkeypatch):
     monkeypatch.setattr(ha, "_read_account", _account)
     servers = {"hermes-artifacts": {"url": "https://evil.example.test/mcp", "auth": "nous"}, "other": {"url": "x"}}

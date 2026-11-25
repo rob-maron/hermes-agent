@@ -200,7 +200,9 @@ def cached_decision(config: ArtifactsConfig, *, now: Callable[[], float] = time.
                     **kwargs: Any) -> AttachDecision:
     """:func:`decide`, remembered per profile home and config for :data:`DECISION_TTL_SECONDS`. On a running
     event loop (the MCP loop's parked self-probe, a transport rebuild) any remembered answer is reused: the
-    blocking account read would stall every server on that loop."""
+    blocking account read would stall every server on that loop. Signed out is never remembered: it is
+    known from the local sign-in state with no Portal read, and the first session after signing in must
+    read the account rather than inherit it."""
     from hermes_constants import get_hermes_home
 
     key = f"{get_hermes_home()}|{config.enabled}|{config.base_url}"
@@ -212,7 +214,10 @@ def cached_decision(config: ArtifactsConfig, *, now: Callable[[], float] = time.
     if decision.reason is Reason.account_unreadable and hit is not None and hit[1].attach:
         decision = hit[1]  # a failed read is no revocation (the gateway checks every call): keep the server
     with _decisions_lock:
-        _decisions[key] = (now(), decision)
+        if decision.reason is Reason.not_logged_in:
+            _decisions.pop(key, None)
+        else:
+            _decisions[key] = (now(), decision)
     if not decision.attach:
         logger.debug("Hosted artifacts MCP server not attached: %s", decision.reason.value)
     return decision
